@@ -34,6 +34,9 @@ public static class BiscvitProgram
                 else if (a == "--sp" && i + 1 < args.Length) cpu.SetRegPair(Cpu6.SP, Hex16(args[++i]));
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
                 else if (a == "--floppy-sector-size" && i + 1 < args.Length) cpu.FloppySectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
+                else if (a == "--floppy-sectors-per-track" && i + 1 < args.Length) cpu.FloppySectorsPerTrack = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
+                else if (a == "--floppy-heads" && i + 1 < args.Length) cpu.FloppyHeads = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
+                else if (a == "--floppy-tracks" && i + 1 < args.Length) cpu.FloppyTracks = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--boot-floppy") cpu.BootFloppy();
                 else if (a == "--run") headless = true;
                 else if (a == "--max" && i + 1 < args.Length) maxSteps = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -47,8 +50,8 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--floppy image] [--boot-floppy] [--run] [--max n]");
-        Console.WriteLine("TUI keys: s step, r run/pause, n 100 steps, +/- speed, g goto memory, l load binary, b breakpoint, q/F10 quit");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--floppy image] [--floppy-sector-size n] [--floppy-sectors-per-track n] [--floppy-heads n] [--floppy-tracks n] [--boot-floppy] [--run] [--max n]");
+        Console.WriteLine("TUI keys: s step, r run/pause, n 100 steps, +/- speed, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
     }
     public static ushort Hex16(string s)
     {
@@ -138,6 +141,8 @@ public sealed class Tui
                     string f = Prompt("load binary file"); if (f.Length == 0) break;
                     string a = Prompt("load address"); if (a.Length == 0) break;
                     cpu.Load(File.ReadAllBytes(f), BiscvitProgram.Hex16(a)); status = "loaded " + f; break;
+                case ConsoleKey.M:
+                    EditMemory(); break;
                 default:
                     if (!char.IsControl(k.KeyChar)) cpu.QueueTerminalInput((byte)k.KeyChar);
                     else if (k.Key == ConsoleKey.Enter) cpu.QueueTerminalInput((byte)'\n');
@@ -145,6 +150,25 @@ public sealed class Tui
             }
         }
         catch (Exception ex) { running = false; status = ex.Message; }
+    }
+
+    void EditMemory()
+    {
+        string a = Prompt("edit address");
+        if (a.Length == 0) return;
+        ushort addr = BiscvitProgram.Hex16(a);
+        string bytes = Prompt("hex bytes");
+        if (bytes.Length == 0) return;
+        string[] parts = bytes.Split(new char[] { ' ', '\t', ',' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            int v = Int32.Parse(parts[i], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            if (v < 0 || v > 0xFF) throw new ArgumentException("byte out of range: " + parts[i]);
+            cpu.Poke((ushort)(addr + i), (byte)v);
+        }
+        memAt = (ushort)(addr & 0xFFF0);
+        followPc = false;
+        status = $"wrote {parts.Length} byte(s) at {addr:X4}";
     }
 
     string Prompt(string label)
@@ -206,7 +230,7 @@ public sealed class Tui
         }
 
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Put(0, h - 2, Pad("s step  r run/pause  n +100  +/- speed  arrows/page mem  home follow-PC  g goto  p setpc  b break  l load  q quit", w));
+        Put(0, h - 2, Pad("s step  r run/pause  n +100  +/- speed  arrows/page mem  home follow-PC  g goto  m edit  p setpc  b break  l load  q quit", w));
         Console.ResetColor(); Put(0, h - 1, Pad("status: " + status + " | steps " + steps + " | speed " + stepsPerTick + "/tick" + (followPc ? " | follow PC" : ""), w));
         Snapshot();
     }
@@ -281,6 +305,7 @@ public sealed class Tui
             $"Floppy F140    {(cpu.FloppyMounted ? "mounted" : "not mounted")}",
             $"  cmd {cpu.FloppyCommand:X2}  status {cpu.FloppyStatus:X2}  unit {cpu.FloppyUnit:X2}",
             $"  track {cpu.FloppyTrack:D2}  sector {cpu.FloppySector:D2}  head {cpu.FloppyHead:D1}  size {cpu.FloppySectorSize}",
+            $"  geometry {cpu.FloppyTracks}T/{cpu.FloppyHeads}H/{cpu.FloppySectorsPerTrack}S",
             $"DMA            addr {cpu.DmaAddr:X4}  count {cpu.DmaCount:X4}  mode {cpu.DmaMode:X2}",
             $"Memory         64K RAM",
             $"Interrupts     IPL {cpu.Ipl:X1}  FLAGS {cpu.Flags}",
@@ -333,7 +358,9 @@ public sealed class Cpu6
     byte floppyCommand, floppyStatus = 1, floppyUnit, floppyTrack, floppySector, floppyHead;
     byte[] floppyImage;
     string floppyPath;
-    const int FloppyTracks = 77, FloppyHeads = 2, FloppySectorsPerTrack = 26;
+    public int FloppyTracks { get; set; } = 77;
+    public int FloppyHeads { get; set; } = 2;
+    public int FloppySectorsPerTrack { get; set; } = 26;
     public int FloppySectorSize { get; set; } = 128;
     public ushort PC { get; set; }
     public bool Halted { get; private set; }
@@ -348,11 +375,12 @@ public sealed class Cpu6
         floppyPath = path;
         floppyImage = File.Exists(path) ? File.ReadAllBytes(path) : new byte[FloppyTracks * FloppyHeads * FloppySectorsPerTrack * FloppySectorSize];
         floppyStatus = 1;
-        Console.WriteLine("mounted 8-inch floppy: {0} ({1} bytes)", path, floppyImage.Length);
+        Console.WriteLine("mounted 8-inch floppy: {0} ({1} bytes{2})", path, floppyImage.Length, IsAllZero(floppyImage) ? ", blank" : "");
     }
     public void BootFloppy()
     {
         EnsureFloppy();
+        if (IsAllZero(floppyImage)) throw new InvalidOperationException("floppy image is blank/all zero; nothing to boot");
         int n = Math.Min(floppyImage.Length, 0x10000 - 0x0100);
         Buffer.BlockCopy(floppyImage, 0, mem, 0x0100, n);
         PC = 0x0103;
@@ -361,6 +389,7 @@ public sealed class Cpu6
 
     byte Read8(ushort a)
     {
+        if (a == 0xF200) return (byte)(0x02 | (terminalInput.Count != 0 ? 0x01 : 0x00)); // MUX0 status: RX ready bit0, TX ready bit1
         if (a == 0xF201)
         {
             if (terminalInput.Count != 0) return terminalInput.Dequeue();
@@ -372,6 +401,7 @@ public sealed class Cpu6
     void Write8(ushort a, int v)
     {
         byte b = (byte)v;
+        if (a == 0xF200) return; // MUX0 control/config
         if (a == 0xF201) { var h = TerminalOutput; if (h != null) h((char)b); else Console.Write((char)b); return; }
         if (a >= 0xF140 && a <= 0xF145) { WriteFloppyReg(a, b); return; }
         mem[a] = b;
@@ -547,6 +577,12 @@ public sealed class Cpu6
         if (String.IsNullOrEmpty(floppyPath)) return;
         File.WriteAllBytes(floppyPath, floppyImage);
     }
+    static bool IsAllZero(byte[] bytes)
+    {
+        if (bytes == null || bytes.Length == 0) return true;
+        for (int i = 0; i < bytes.Length; i++) if (bytes[i] != 0) return false;
+        return true;
+    }
 
     void Inc8(int r) { int v = Reg(r) + 1; Reg(r, v); Flag8(v, false, 0); } void Dec8(int r) { int v = Reg(r) - 1; Reg(r, v); Flag8(v, false, 0); }
     void Add8(int d, int s) { int v = Reg(d) + Reg(s); Reg(d, v); Flag8(v, true, v & 0x100); } void Sub8(int d, int s) { int v = Reg(d) - Reg(s); Reg(d, v); Flag8(v, true, v & 0x100); }
@@ -585,6 +621,7 @@ public sealed class Cpu6
     public void SetByName(string name, ushort v) { name = name.ToLowerInvariant(); if (name == "pc") PC = v; else if (name == "ax") SetRegPair(AX, v); else if (name == "bx") SetRegPair(BX, v); else if (name == "rt") SetRegPair(RT, v); else if (name == "dx") SetRegPair(DX, v); else if (name == "ex") SetRegPair(EX, v); else if (name == "sp") SetRegPair(SP, v); else if (name == "gx") SetRegPair(GX, v); else if (name == "hx") SetRegPair(HX, v); else throw new ArgumentException("unknown register " + name); }
     public ushort GetRegPair(int r) { return RegPair(r); }
     public byte Peek(ushort a) { return mem[a]; }
+    public void Poke(ushort a, byte v) { Write8(a, v); }
     public string Flags { get { return FlagString(); } }
     public byte Ipl { get { return ipl; } }
     public int TerminalInputCount { get { return terminalInput.Count; } }
