@@ -51,7 +51,7 @@ public static class BiscvitProgram
     static void Usage()
     {
         Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--floppy image] [--floppy-sector-size n] [--floppy-sectors-per-track n] [--floppy-heads n] [--floppy-tracks n] [--boot-floppy] [--run] [--max n]");
-        Console.WriteLine("TUI keys: s step, r run/pause, n 100 steps, +/- speed, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
+        Console.WriteLine("TUI keys: s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
     }
     public static ushort Hex16(string s)
     {
@@ -71,6 +71,7 @@ public sealed class Tui
     bool haveLast;
     bool followPc = true;
     int stepsPerTick = 250;
+    int refreshMs = 100;
     long steps;
     string status = "ready";
 
@@ -89,6 +90,7 @@ public sealed class Tui
         {
             try { Console.CursorVisible = false; } catch { }
             Draw();
+            long lastDraw = Environment.TickCount64;
             while (true)
             {
                 if (running && !cpu.Halted)
@@ -99,7 +101,8 @@ public sealed class Tui
                         if (!StepOne()) break;
                     }
                     if (followPc) memAt = (ushort)(cpu.PC & 0xFFF0);
-                    Draw();
+                    long now = Environment.TickCount64;
+                    if (!running || cpu.Halted || now - lastDraw >= refreshMs) { Draw(); lastDraw = now; }
                 }
                 if (!Console.KeyAvailable) { System.Threading.Thread.Sleep(running ? 1 : 25); continue; }
                 var k = Console.ReadKey(true);
@@ -120,6 +123,8 @@ public sealed class Tui
     {
         try
         {
+            if (k.KeyChar == '[') { refreshMs = Math.Min(1000, refreshMs + 25); status = "refresh " + refreshMs + "ms"; return; }
+            if (k.KeyChar == ']') { refreshMs = Math.Max(25, refreshMs - 25); status = "refresh " + refreshMs + "ms"; return; }
             switch (k.Key)
             {
                 case ConsoleKey.S: running = false; if (!cpu.Halted) StepOne(); status = "stepped"; if (followPc) memAt = (ushort)(cpu.PC & 0xFFF0); break;
@@ -129,6 +134,8 @@ public sealed class Tui
                 case ConsoleKey.OemPlus: stepsPerTick = Math.Min(50000, stepsPerTick * 2); status = "speed " + stepsPerTick + "/tick"; break;
                 case ConsoleKey.Subtract:
                 case ConsoleKey.OemMinus: stepsPerTick = Math.Max(1, stepsPerTick / 2); status = "speed " + stepsPerTick + "/tick"; break;
+                case ConsoleKey.Oem4: refreshMs = Math.Min(1000, refreshMs + 25); status = "refresh " + refreshMs + "ms"; break;
+                case ConsoleKey.Oem6: refreshMs = Math.Max(25, refreshMs - 25); status = "refresh " + refreshMs + "ms"; break;
                 case ConsoleKey.UpArrow: followPc = false; memAt -= 16; break;
                 case ConsoleKey.DownArrow: followPc = false; memAt += 16; break;
                 case ConsoleKey.PageUp: followPc = false; memAt -= 256; break;
@@ -214,7 +221,7 @@ public sealed class Tui
             int rightWidth = w - rightX;
             DrawDivider(dividerX, 1, h - 3);
             DrawRegs(0, 2, leftWidth);
-            DrawMemory(0, 7, Math.Max(1, h - 11), leftWidth);
+            DrawMemory(0, 7, Math.Max(1, Math.Min(16, h - 11)), leftWidth);
             int deviceRows = Math.Min(8, Math.Max(4, h / 5));
             int deviceY = h - deviceRows - 2;
             int terminalRows = Math.Max(1, deviceY - 3);
@@ -230,8 +237,8 @@ public sealed class Tui
         }
 
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Put(0, h - 2, Pad("s step  r run/pause  n +100  +/- speed  arrows/page mem  home follow-PC  g goto  m edit  p setpc  b break  l load  q quit", w));
-        Console.ResetColor(); Put(0, h - 1, Pad("status: " + status + " | steps " + steps + " | speed " + stepsPerTick + "/tick" + (followPc ? " | follow PC" : ""), w));
+        Put(0, h - 2, Pad("s step  r run/pause  n +100  +/- speed  [/ ] refresh  arrows/page mem  home follow-PC  g goto  m edit  p setpc  b break  l load  q quit", w));
+        Console.ResetColor(); Put(0, h - 1, Pad("status: " + status + " | steps " + steps + " | speed " + stepsPerTick + "/tick | refresh " + refreshMs + "ms" + (followPc ? " | follow PC" : ""), w));
         Snapshot();
     }
 
