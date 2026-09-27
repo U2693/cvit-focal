@@ -483,7 +483,7 @@ public sealed class Cpu6
         switch (mode & 15)
         {
             case 0: a = PC; PC += (ushort)size; break; case 1: a = PC; PC += 2; indir = 1; break; case 2: a = PC; PC += 2; indir = 2; break;
-            case 3: a = (ushort)(PC + unchecked((sbyte)Fetch())); indir = 1; break; case 4: a = (ushort)(PC + unchecked((sbyte)Fetch())); indir = 2; break;
+            case 3: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); indir = 1; break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); indir = 2; break; }
             case 5: a = Indexed(size); break; default: a = RegPair(mode & 7); break;
         }
         while (indir-- > 0) a = Read16(a); return a;
@@ -493,7 +493,7 @@ public sealed class Cpu6
     void Jump()
     {
         if (op == 0x76) { ipl = 15; return; }
-        ushort n; switch (op & 7) { case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: n = (ushort)(PC + unchecked((sbyte)Fetch())); break; case 5: n = (ushort)(RegPair(AX) + unchecked((sbyte)Fetch())); break; default: Unknown(); return; }
+        ushort n; switch (op & 7) { case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 5: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(RegPair(AX) + off); break; } default: Unknown(); return; }
         if ((op & 8) != 0) { Push(RegPair(RT)); SetRegPair(RT, PC); } PC = n;
     }
     void Misc8()
