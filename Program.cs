@@ -280,9 +280,11 @@ public sealed class Tui
             int dividerX = leftWidth + 1;
             int rightX = dividerX + 2;
             int rightWidth = w - rightX;
-            DrawDivider(dividerX, 1, h - 3);
+            DrawDivider(dividerX, 1, h - 2);
             DrawRegs(0, 2, leftWidth);
-            DrawMemory(0, 7, Math.Max(1, Math.Min(16, h - 11)), leftWidth);
+            int helpY = h - 4;
+            DrawMemory(0, 7, Math.Max(1, Math.Min(16, helpY - 8)), leftWidth);
+            DrawHelp(0, helpY, leftWidth);
             int deviceRows = Math.Min(8, Math.Max(4, h / 5));
             int deviceY = h - deviceRows - 2;
             int terminalRows = Math.Max(1, deviceY - 3);
@@ -297,9 +299,8 @@ public sealed class Tui
             DrawTerminal(0, 8 + memRows, w, Math.Max(1, h - memRows - 11));
         }
 
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Put(0, h - 2, Pad("Alt-= terminal focus  s step  r run/pause  n +100  +/- speed  [/ ] refresh  arrows/page mem  home follow-PC  g goto  m edit  p setpc  b break  l load  q quit", w));
-        Console.ResetColor(); Put(0, h - 1, Pad("status: " + status + " | " + (terminalFocus ? "TERMINAL" : "TUI") + " focus | steps " + steps + " | speed " + stepsPerTick + "/tick | refresh " + refreshMs + "ms" + (followPc ? " | follow PC" : ""), w));
+        Console.ResetColor();
+        Put(0, h - 1, Pad("status: " + status + " | " + (terminalFocus ? "TERMINAL" : "TUI") + " focus | steps " + steps + " | speed " + stepsPerTick + "/tick | refresh " + refreshMs + "ms" + (followPc ? " | follow PC" : ""), w));
         Snapshot();
     }
 
@@ -347,6 +348,17 @@ public sealed class Tui
             Put(x, y+r, Pad(line.ToString(), width));
             if (pcRow) Console.ResetColor();
         }
+    }
+
+    void DrawHelp(int x, int y, int width)
+    {
+        if (width <= 0) return;
+        Put(x, y - 1, BoxTitle(" Help ", width));
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Put(x, y,     Pad("Alt-= focus terminal   s step   r run/pause   n +100", width));
+        Put(x, y + 1, Pad("+/- speed   [/ ] refresh   arrows/page memory   home PC", width));
+        Put(x, y + 2, Pad("g goto   m edit   p set PC   b break   l load   q quit", width));
+        Console.ResetColor();
     }
 
     void DrawTerminal(int x, int y, int width, int height)
@@ -552,38 +564,176 @@ public sealed class Cpu6
         }
         sbyte off = unchecked((sbyte)Fetch()); if (t) PC = (ushort)(PC + off);
     }
-    ushort Indexed(int size) { byte idx = Fetch(); int r = idx >> 5; int off = (idx & 8) != 0 ? unchecked((sbyte)Fetch()) : 0; ushort a = RegPair(r); if ((idx & 7) == 1) SetRegPair(r, (ushort)(a + size)); else if ((idx & 7) == 2) { a = (ushort)(a - size); SetRegPair(r, a); } else if ((idx & 7) != 0) Unknown(); return (ushort)(a + off); }
+    ushort Indexed(int size)
+    {
+        byte idx = Fetch();
+        if ((idx & 0x10) != 0) Unknown();
+        int r = (idx >> 4) >> 1;
+        int transferSize = (idx & 4) != 0 ? 2 : size; // indirect forms point at word pointers
+        ushort reg = RegPair(r);
+        if ((idx & 3) == 2) reg = (ushort)(reg - transferSize);
+        ushort a = reg;
+        if ((idx & 3) == 1) reg = (ushort)(reg + transferSize);
+        else if ((idx & 3) != 0 && (idx & 3) != 2) Unknown();
+        SetRegPair(r, reg);
+        if ((idx & 8) != 0) a = (ushort)(a + unchecked((sbyte)Fetch()));
+        if ((idx & 4) != 0) a = Read16(a);
+        return a;
+    }
     ushort Addr(int size, int mode)
     {
-        ushort a; int indir = 0;
+        ushort a;
         switch (mode & 15)
         {
-            case 0: a = PC; PC += (ushort)size; break; case 1: a = PC; PC += 2; indir = 1; break; case 2: a = PC; PC += 2; indir = 2; break;
-            case 3: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); indir = 1; break; }
+            case 0: a = PC; PC += (ushort)size; break;
+            case 1: a = Fetch16(); break;
+            case 2: a = Read16(Fetch16()); break;
+            case 3: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); break; }
+            case 4: { sbyte off = unchecked((sbyte)Fetch()); a = Read16((ushort)(PC + off)); break; }
             case 5: a = Indexed(size); break; default: a = RegPair(mode & 7); break;
         }
-        while (indir-- > 0) a = Read16(a); return a;
+        return a;
     }
-    void LoadStore() { int m = op & 15; bool b = (op & 0x40) != 0; ushort a; switch (op & 0x30) { case 0x00: a = Addr(1, m); Reg(b ? BL : AL, Read8(a)); Flag8(Reg(b ? BL : AL), false, 0); break; case 0x10: a = Addr(2, m); SetRegPair(b ? BX : AX, Read16(a)); Flag16(RegPair(b ? BX : AX), false, 0); break; case 0x20: a = Addr(1, m); Write8(a, Reg(b ? BL : AL)); break; case 0x30: a = Addr(2, m); Write16(a, RegPair(b ? BX : AX)); break; } }
+    void LoadStore()
+    {
+        if (op == 0xD7) { InterLevelStore(); return; }
+        if (op == 0xE6) { InterLevelLoad(); return; }
+        if (op == 0xF6) { Xio(); return; }
+        int m = op & 15; bool b = (op & 0x40) != 0; ushort a; switch (op & 0x30) { case 0x00: a = Addr(1, m); Reg(b ? BL : AL, Read8(a)); Flag8(Reg(b ? BL : AL), false, 0); break; case 0x10: a = Addr(2, m); SetRegPair(b ? BX : AX, Read16(a)); Flag16(RegPair(b ? BX : AX), false, 0); break; case 0x20: a = Addr(1, m); Write8(a, Reg(b ? BL : AL)); break; case 0x30: a = Addr(2, m); Write16(a, RegPair(b ? BX : AX)); break; }
+    }
+    void InterLevelStore()
+    {
+        byte e = Fetch();
+        int level = e >> 4, reg = e & 15;
+        ushort baseAddr = (ushort)((level << 4) | (reg & 14));
+        Write8(baseAddr, Reg(AH));
+        Write8((ushort)(baseAddr + 1), Reg(AL));
+    }
+    void InterLevelLoad()
+    {
+        byte e = Fetch();
+        int level = e >> 4, reg = e & 15;
+        ushort baseAddr = (ushort)((level << 4) | (reg & 14));
+        // WIPL waits on IL6(A), which real hardware fills from a MUX interrupt.
+        // We do not emulate interrupts yet, so deliver queued terminal input here.
+        if (e == 0x60 && Read16(baseAddr) == 0 && terminalInput.Count != 0)
+            Write16(baseAddr, terminalInput.Dequeue());
+        SetRegPair(AX, (ushort)((Read8(baseAddr) << 8) | Read8((ushort)(baseAddr + 1))));
+        Flag16(RegPair(AX), false, 0);
+    }
+    void Xio()
+    {
+        byte spec = Fetch();
+        sbyte off = unchecked((sbyte)Fetch());
+        ushort a = (ushort)(RegPair(EX) + off); // Z register is the device base in WIPL's XIO forms.
+        if (spec == 0x19) Write8(a, Reg(AL));
+        else if (spec == 0x39) Write8(a, Reg(BL));
+        else if (spec == 0x38) { Reg(BL, Read8(a)); Flag8(Reg(BL), false, 0); }
+        else Unknown();
+    }
     void Rt() { ushort a = Addr(2, op & 7); if ((op & 8) != 0) Write16(a, RegPair(RT)); else SetRegPair(RT, Read16(a)); Flag16(RegPair(RT), false, 0); }
     void Jump()
     {
         if (op == 0x76) { ipl = 15; return; }
-        ushort n; switch (op & 7) { case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 5: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(RegPair(AX) + off); break; } default: Unknown(); return; }
+        if (op == 0x7E) { PushBytes(); return; }
+        if (op == 0x7F) { PopBytes(); return; }
+        ushort n; switch (op & 7) { case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); n = Read16((ushort)(PC + off)); break; } case 5: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(RegPair(AX) + off); break; } default: Unknown(); return; }
         if ((op & 8) != 0) { Push(RegPair(RT)); SetRegPair(RT, PC); } PC = n;
+    }
+    void PushBytes()
+    {
+        byte e = Fetch();
+        int r = e >> 4, count = (e & 15) + 1;
+        ushort sp = RegPair(SP);
+        r += count;
+        while (count-- > 0) { sp--; r--; Write8(sp, Reg(r & 15)); }
+        SetRegPair(SP, sp);
+    }
+    void PopBytes()
+    {
+        byte e = Fetch();
+        int r = e >> 4, count = (e & 15) + 1;
+        ushort sp = RegPair(SP);
+        while (count-- > 0) { Reg(r & 15, Read8(sp)); sp++; r++; }
+        SetRegPair(SP, sp);
     }
     void Misc8()
     {
-        int r = AL; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else Unknown(); return; } r = enc >> 4; }
-        switch (op) { case 0x20: Inc8(r); break; case 0x21: Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: Shr8(r); break; case 0x25: Shl8(r); break; case 0x26: Rrc8(r); break; case 0x27: Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: byte e = Fetch(); SetRegPair((e & 15) >> 1, (ushort)(e >> 5)); break; case 0x2F: Dma(); break; default: Unknown(); break; }
+        int r = AL, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op >= 0x24 && op <= 0x27) { r = enc >> 4; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 4; }
+        switch (op) { case 0x20: Inc8(r); break; case 0x21: Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) Shr8(r); break; case 0x25: while (count-- > 0) Shl8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: byte e = Fetch(); SetRegPair((e & 15) >> 1, (ushort)(e >> 5)); break; case 0x2F: Dma(); break; default: Unknown(); break; }
     }
     void Misc16()
     {
-        int r = AX; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else Unknown(); return; } r = enc >> 5; }
-        switch (op) { case 0x30: Inc16(r); break; case 0x31: Dec16(r); break; case 0x32: SetRegPair(r, 0); Flag16(0, false, 0); break; case 0x33: SetRegPair(r, (ushort)~RegPair(r)); Flag16(RegPair(r), false, 0); break; case 0x34: Shr16(r); break; case 0x35: Shl16(r); break; case 0x36: Rrc16(r); break; case 0x37: Rlc16(r); break; case 0x38: Inc16(AX); break; case 0x39: Dec16(AX); break; case 0x3A: SetRegPair(AX, 0); Flag16(0, false, 0); break; case 0x3B: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break; case 0x3C: Shr16(AX); break; case 0x3D: Shl16(AX); break; case 0x3E: Inc16(RT); break; case 0x3F: Dec16(RT); break; }
+        int r = AX, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x30 || op == 0x31 || (op >= 0x34 && op <= 0x37)) { r = (enc >> 4) >> 1; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 5; }
+        switch (op) { case 0x30: while (count-- > 0) Inc16(r); break; case 0x31: while (count-- > 0) Dec16(r); break; case 0x32: SetRegPair(r, 0); Flag16(0, false, 0); break; case 0x33: SetRegPair(r, (ushort)~RegPair(r)); Flag16(RegPair(r), false, 0); break; case 0x34: while (count-- > 0) Shr16(r); break; case 0x35: while (count-- > 0) Shl16(r); break; case 0x36: while (count-- > 0) Rrc16(r); break; case 0x37: while (count-- > 0) Rlc16(r); break; case 0x38: Inc16(AX); break; case 0x39: Dec16(AX); break; case 0x3A: SetRegPair(AX, 0); Flag16(0, false, 0); break; case 0x3B: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break; case 0x3C: Shr16(AX); break; case 0x3D: Shl16(AX); break; case 0x3E: Inc16(RT); break; case 0x3F: Dec16(RT); break; }
     }
-    void Alu8() { int s = AL, d = BL; if ((op & 8) == 0) { byte e = Fetch(); s = e >> 4; d = e & 15; } switch (op & 7) { case 0: Add8(d, s); break; case 1: Sub8(d, s); break; case 2: And8(d, s); break; case 3: Or8(d, s); break; case 4: Xor8(d, s); break; case 5: Reg(d, Reg(s)); Flag8(Reg(d), false, 0); break; default: Unknown(); break; } }
-    void Alu16() { if (op == 0x5F) { SetRegPair(SP, RegPair(AX)); return; } int s = AX, d = BX; if ((op & 8) == 0) { byte e = Fetch(); s = e >> 5; d = (e & 15) >> 1; } switch (op & 7) { case 0: Add16(d, s); break; case 1: Sub16(d, s); break; case 2: And16(d, s); break; case 3: Or16(d, s); break; case 4: Xor16(d, s); break; case 5: SetRegPair(d, RegPair(s)); Flag16(RegPair(d), false, 0); break; default: Unknown(); break; } }
+    void Alu8()
+    {
+        if (op == 0x47) { MemOp(); return; }
+        int s = AL, d = BL;
+        if ((op & 8) == 0) { byte e = Fetch(); s = e >> 4; d = e & 15; }
+        else if (op >= 0x4B)
+        {
+            d = op == 0x4B ? RL : op == 0x4C ? DL : op == 0x4D ? BL : op == 0x4E ? EL : SL;
+            Reg(d, Reg(s)); Flag8(Reg(d), false, 0); return;
+        }
+        switch (op & 7) { case 0: Add8(d, s); break; case 1: Sub8(d, s); break; case 2: And8(d, s); break; case 3: Or8(d, s); break; case 4: Xor8(d, s); break; case 5: Reg(d, Reg(s)); Flag8(Reg(d), false, 0); break; default: Unknown(); break; }
+    }
+    void Alu16()
+    {
+        int s = AX, d = BX;
+        bool extended = false;
+        ushort src = 0, dst = 0;
+        if ((op & 8) == 0)
+        {
+            byte e = Fetch();
+            int mode = e & 0x11;
+            s = (e >> 4) >> 1;
+            d = (e & 15) >> 1;
+            if (mode != 0)
+            {
+                ushort a = PC; PC += 2;
+                if ((mode & 1) != 0) a = Read16(a);
+                if (mode == 0x11) { a = (ushort)(a + RegPair(s)); s = d; }
+                src = Read16(a);
+                dst = RegPair(s);
+                extended = true;
+            }
+        }
+        else if (op >= 0x5B)
+        {
+            d = op == 0x5B ? RT : op == 0x5C ? DX : op == 0x5D ? BX : op == 0x5E ? EX : SP;
+            SetRegPair(d, RegPair(s)); Flag16(RegPair(d), false, 0); return;
+        }
+        if (!extended) { src = RegPair(s); dst = RegPair(d); }
+        ushort result;
+        switch (op & 7)
+        {
+            case 0: { int r = dst + src; result = (ushort)r; SetRegPair(d, result); Flag16(r, true, r > 0xFFFF ? 1 : 0); break; }
+            case 1: { int r = dst - src; result = (ushort)r; SetRegPair(d, result); Flag16(r, true, r < 0 ? 1 : 0); break; }
+            case 2: result = (ushort)(dst & src); SetRegPair(d, result); Flag16(result, false, 0); break;
+            case 3: result = (ushort)(dst | src); SetRegPair(d, result); Flag16(result, false, 0); break;
+            case 4: result = (ushort)(dst ^ src); SetRegPair(d, result); Flag16(result, false, 0); break;
+            case 5: SetRegPair(d, src); Flag16(src, false, 0); break;
+            default: Unknown(); break;
+        }
+    }
+    void MemOp()
+    {
+        byte ib = Fetch();
+        int selector = ib >> 4;
+        int len = Fetch() + 1;
+        if (selector == 4 || selector == 9)
+        {
+            byte value = Fetch();
+            ushort dst = Fetch16();
+            for (int i = 0; i < len; i++) Write8((ushort)(dst + i), value);
+            Flag8(value, false, 0);
+            return;
+        }
+        Unknown();
+    }
+
     void Dma()
     {
         byte e = Fetch();
