@@ -317,6 +317,157 @@ public sealed class Tui
         Put(x, y, Pad($"PC {cpu.PC:X4}  FLAGS {cpu.Flags}  IPL {cpu.Ipl:X1}  {(cpu.Halted ? "HALT" : running ? "RUN " : "PAUSE")}  BRK {(cpu.Breakpoint < 0 ? "----" : cpu.Breakpoint.ToString("X4"))}", width));
         DrawRegLine(x, y+1, new[] { Cpu6.AX, Cpu6.BX, Cpu6.RT, Cpu6.DX }, new[] { "AX", "BX", "RT", "DX" });
         DrawRegLine(x, y+2, new[] { Cpu6.EX, Cpu6.SP, Cpu6.GX, Cpu6.HX }, new[] { "EX", "SP", "GX", "HX" });
+        Put(x, y+3, Pad("OP " + DecodeAt(cpu.PC), width));
+    }
+
+    string DecodeAt(ushort pc)
+    {
+        byte op = cpu.Peek(pc), b1 = cpu.Peek((ushort)(pc + 1)), b2 = cpu.Peek((ushort)(pc + 2));
+        string bytes = $"{op:X2}";
+        string inst, args = "";
+        if (op < 0x10)
+        {
+            inst = op switch { 0x00 => "HALT", 0x01 => "NOP", 0x02 => "SN", 0x03 => "RN", 0x04 => "EI", 0x05 => "DI", 0x06 => "SC", 0x07 => "RC", 0x08 => "CLF", 0x09 => "RSR", 0x0E => "DLY", 0x0F => "RSYS", _ => "LOW" };
+        }
+        else if (op < 0x20)
+        {
+            sbyte off = unchecked((sbyte)b1);
+            bytes += $" {b1:X2}";
+            inst = BranchName(op & 15);
+            args = $"{(ushort)(pc + 2 + off):X4}";
+        }
+        else if (op < 0x30)
+        {
+            inst = (op & 7) switch { 0 => "INRB", 1 => "DCRB", 2 => "CLRB", 3 => "NOTB", 4 => "SRLB", 5 => "SLLB", 6 => "RRCB", 7 => "RLCB", _ => "MISC8" };
+            if ((op & 8) == 0) { bytes += $" {b1:X2}"; args = $"{ByteReg(b1 >> 4)}" + ((b1 & 15) != 0 ? $",#{(b1 & 15) + 1}" : ""); }
+            else args = "AL";
+            if (op == 0x2E) { bytes += $" {b1:X2}"; inst = "LDM"; args = $"{PairReg((b1 & 15) >> 1)},#{b1 >> 5:X}"; }
+            if (op == 0x2F) { bytes += $" {b1:X2}"; inst = "DMA"; args = $"{b1:X2}"; }
+        }
+        else if (op < 0x40)
+        {
+            inst = (op & 7) switch { 0 => "INR", 1 => "DCR", 2 => "CLR", 3 => "NOT", 4 => "SRL", 5 => "SLL", 6 => "RRC", 7 => "RLC", _ => "MISC16" };
+            if ((op & 8) == 0) { bytes += $" {b1:X2}"; args = $"{PairReg((b1 >> 4) >> 1)}" + ((b1 & 15) != 0 ? $",#{(b1 & 15) + 1}" : ""); }
+            else args = (op == 0x3E || op == 0x3F) ? "RT" : "AX";
+        }
+        else if (op < 0x50)
+        {
+            inst = (op & 7) switch { 0 => "ADDB", 1 => "SUBB", 2 => "ANDB", 3 => "ORB", 4 => "XORB", 5 => "XFRB", 7 => "MEM", _ => "ALU8" };
+            if (op == 0x47) { bytes += $" {b1:X2} {b2:X2} ..."; args = MemArgs(pc); }
+            else if ((op & 8) == 0) { bytes += $" {b1:X2}"; args = $"{ByteReg(b1 >> 4)},{ByteReg(b1 & 15)}"; }
+            else args = $"AL,{ImplicitByteDest(op)}";
+        }
+        else if (op < 0x60)
+        {
+            inst = (op & 7) switch { 0 => "ADD", 1 => "SUB", 2 => "AND", 3 => "OR", 4 => "XOR", 5 => "XFR", _ => "ALU16" };
+            if ((op & 8) == 0)
+            {
+                bytes += $" {b1:X2}";
+                int mode = b1 & 0x11;
+                if (mode != 0) bytes += $" {b2:X2} {cpu.Peek((ushort)(pc + 3)):X2}";
+                args = Alu16Args(pc, b1, mode);
+            }
+            else args = $"AX,{ImplicitWordDest(op)}";
+        }
+        else if (op < 0x70)
+        {
+            var a = AddrArg(pc, 2, op & 7, out int len);
+            bytes += Bytes(pc, 1, len - 1);
+            inst = (op & 8) != 0 ? "STR" : "LDR";
+            args = (op & 8) != 0 ? $"RT,{a}" : $"RT,{a}";
+        }
+        else if (op < 0x80)
+        {
+            if (op == 0x7E || op == 0x7F) { bytes += $" {b1:X2}"; inst = op == 0x7E ? "PUSH" : "POP"; args = ByteRange(b1); }
+            else
+            {
+                var a = JumpArg(pc, op & 7, out int len);
+                bytes += Bytes(pc, 1, len - 1);
+                inst = (op & 8) != 0 ? "CALL" : "JMP";
+                args = a;
+            }
+        }
+        else if (op == 0xD7 || op == 0xE6)
+        {
+            bytes += $" {b1:X2}";
+            inst = op == 0xD7 ? "ILST" : "ILLD";
+            args = $"IL{b1 >> 4}({PairReg((b1 & 15) >> 1)}),AX";
+        }
+        else if (op == 0xF6)
+        {
+            bytes += $" {b1:X2} {b2:X2}";
+            inst = "XIO";
+            args = $"{ByteReg((b1 & 0x20) != 0 ? Cpu6.BL : Cpu6.AL)},[EX{unchecked((sbyte)b2):+0;-0;0}]";
+        }
+        else
+        {
+            int m = op & 15;
+            var a = AddrArg(pc, ((op & 0x10) != 0) ? 2 : 1, m, out int len);
+            bytes += Bytes(pc, 1, len - 1);
+            bool word = (op & 0x10) != 0, b = (op & 0x40) != 0;
+            bool store = (op & 0x20) != 0;
+            inst = (store ? "ST" : "LD") + (word ? "" : "B");
+            string r = word ? (b ? "BX" : "AX") : (b ? "BL" : "AL");
+            args = store ? $"{r},{a}" : $"{r},{a}";
+        }
+        return $"{pc:X4}: {bytes,-14} {inst} {args}".TrimEnd();
+    }
+
+    string BranchName(int n) => n switch { 0 => "BC", 1 => "BNC", 2 => "BN", 3 => "BP", 4 => "BZ", 5 => "BNZ", 6 => "BLT", 7 => "BGE", 8 => "BGT", 9 => "BLE", 10 => "BS1", 11 => "BS2", 12 => "BS3", 13 => "BS4", _ => "BR" };
+    string PairReg(int r) => (r & 7) switch { 0 => "AX", 1 => "BX", 2 => "RT", 3 => "DX", 4 => "EX", 5 => "SP", 6 => "GX", _ => "HX" };
+    string ByteReg(int r) => (r & 15) switch { 0 => "AH", 1 => "AL", 2 => "BH", 3 => "BL", 4 => "RH", 5 => "RL", 6 => "DH", 7 => "DL", 8 => "EH", 9 => "EL", 10 => "SH", 11 => "SL", 12 => "GH", 13 => "GL", 14 => "HH", _ => "HL" };
+    string ImplicitWordDest(int op) => op switch { 0x5B => "RT", 0x5C => "DX", 0x5D => "BX", 0x5E => "EX", 0x5F => "SP", _ => "BX" };
+    string ImplicitByteDest(int op) => op switch { 0x4B => "RL", 0x4C => "DL", 0x4D => "BL", 0x4E => "EL", 0x4F => "SL", _ => "BL" };
+    string Bytes(ushort pc, int start, int count) { var s = new StringBuilder(); for (int i = 0; i < count; i++) s.Append($" {cpu.Peek((ushort)(pc + start + i)):X2}"); return s.ToString(); }
+    ushort WordAt(ushort a) => (ushort)((cpu.Peek(a) << 8) | cpu.Peek((ushort)(a + 1)));
+    string JumpArg(ushort pc, int mode, out int len)
+    {
+        len = 1;
+        if (mode == 1) { len = 3; return $"{WordAt((ushort)(pc + 1)):X4}"; }
+        if (mode == 2) { len = 3; return $"[{WordAt((ushort)(pc + 1)):X4}]"; }
+        if (mode == 3) { len = 2; return $"{(ushort)(pc + 2 + unchecked((sbyte)cpu.Peek((ushort)(pc + 1)))):X4}"; }
+        if (mode == 4) { len = 2; return $"[{(ushort)(pc + 2 + unchecked((sbyte)cpu.Peek((ushort)(pc + 1)))):X4}]"; }
+        if (mode == 5) { len = 2; return $"[AX{unchecked((sbyte)cpu.Peek((ushort)(pc + 1))):+0;-0;0}]"; }
+        return "?";
+    }
+    string AddrArg(ushort pc, int size, int mode, out int len)
+    {
+        len = 1;
+        if (mode == 0) { len = 1 + size; return size == 1 ? $"#{cpu.Peek((ushort)(pc + 1)):X2}" : $"#{WordAt((ushort)(pc + 1)):X4}"; }
+        if (mode == 1) { len = 3; return $"{WordAt((ushort)(pc + 1)):X4}"; }
+        if (mode == 2) { len = 3; return $"[{WordAt((ushort)(pc + 1)):X4}]"; }
+        if (mode == 3) { len = 2; return $"{(ushort)(pc + 2 + unchecked((sbyte)cpu.Peek((ushort)(pc + 1)))):X4}"; }
+        if (mode == 4) { len = 2; return $"[{(ushort)(pc + 2 + unchecked((sbyte)cpu.Peek((ushort)(pc + 1)))):X4}]"; }
+        if (mode == 5) return IndexedArg(pc, size, out len);
+        return PairReg(mode & 7);
+    }
+    string IndexedArg(ushort pc, int size, out int len)
+    {
+        byte idx = cpu.Peek((ushort)(pc + 1));
+        len = ((idx & 8) != 0) ? 3 : 2;
+        string r = PairReg((idx >> 4) >> 1);
+        string pre = (idx & 3) == 2 ? "-" : "";
+        string post = (idx & 3) == 1 ? "+" : "";
+        string disp = (idx & 8) != 0 ? $"{unchecked((sbyte)cpu.Peek((ushort)(pc + 2))):+0;-0;0}" : "";
+        string s = $"[{pre}{r}{post}{disp}]";
+        return (idx & 4) != 0 ? $"@{s}" : s;
+    }
+    string Alu16Args(ushort pc, byte e, int mode)
+    {
+        string s = PairReg((e >> 4) >> 1), d = PairReg((e & 15) >> 1);
+        if (mode == 0) return $"{s},{d}";
+        ushort w = WordAt((ushort)(pc + 2));
+        string src = (mode & 1) != 0 ? $"[{w:X4}]" : $"#{w:X4}";
+        if (mode == 0x11) src = $"[{s}+{w:X4}]";
+        return $"{src},{d}";
+    }
+    string ByteRange(byte e) => $"{ByteReg(e >> 4)}..{ByteReg(((e >> 4) + (e & 15)) & 15)}";
+    string MemArgs(ushort pc)
+    {
+        byte ib = cpu.Peek((ushort)(pc + 1));
+        int selector = ib >> 4;
+        if (selector == 4 || selector == 9) return $"#{cpu.Peek((ushort)(pc + 3)):X2},{WordAt((ushort)(pc + 4)):X4},len {cpu.Peek((ushort)(pc + 2)) + 1}";
+        return $"{ib:X2}";
     }
 
     void DrawRegLine(int x, int y, int[] regs, string[] names)
