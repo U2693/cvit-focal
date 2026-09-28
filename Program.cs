@@ -32,6 +32,9 @@ public static class BiscvitProgram
                 if (a == "--load" && i + 2 < args.Length) cpu.Load(File.ReadAllBytes(args[++i]), Hex16(args[++i]));
                 else if (a == "--pc" && i + 1 < args.Length) cpu.PC = Hex16(args[++i]);
                 else if (a == "--sp" && i + 1 < args.Length) cpu.SetRegPair(Cpu6.SP, Hex16(args[++i]));
+                else if (a == "--boot-rom" && i + 1 < args.Length) { cpu.Load(File.ReadAllBytes(args[++i]), 0xFC00); cpu.PC = 0xFC00; }
+                else if (a == "--type" && i + 1 < args.Length) QueueText(cpu, args[++i]);
+                else if (a == "--trace") cpu.Trace = true;
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
                 else if (a == "--floppy-sector-size" && i + 1 < args.Length) cpu.FloppySectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--floppy-sectors-per-track" && i + 1 < args.Length) cpu.FloppySectorsPerTrack = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -50,9 +53,26 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--floppy image] [--floppy-sector-size n] [--floppy-sectors-per-track n] [--floppy-heads n] [--floppy-tracks n] [--boot-floppy] [--run] [--max n]");
-        Console.WriteLine("TUI keys: s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy image] [--floppy-sector-size n] [--floppy-sectors-per-track n] [--floppy-heads n] [--floppy-tracks n] [--boot-floppy] [--run] [--max n]");
+        Console.WriteLine("TUI keys: Alt-= or Esc = terminal focus, s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
     }
+    static void QueueText(Cpu6 cpu, string text)
+    {
+        for (int i = 0; i < text.Length; i++)
+        {
+            char ch = text[i];
+            if (ch == '\\' && i + 1 < text.Length)
+            {
+                char n = text[++i];
+                if (n == 'n') ch = '\n';
+                else if (n == 'r') ch = '\r';
+                else if (n == 't') ch = '\t';
+                else ch = n;
+            }
+            cpu.QueueTerminalInput((byte)ch);
+        }
+    }
+
     public static ushort Hex16(string s)
     {
         s = s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s.Substring(2) : s;
@@ -69,6 +89,8 @@ public sealed class Tui
     ushort memAt;
     bool running;
     bool haveLast;
+    bool terminalFocus;
+    bool escapePrefix;
     bool followPc = true;
     int stepsPerTick = 250;
     int refreshMs = 100;
@@ -80,7 +102,15 @@ public sealed class Tui
         this.cpu = cpu;
         memAt = cpu.PC;
         Snapshot();
-        cpu.TerminalOutput += ch => { if (ch == '\r') return; if (term.Length > 4096) term.Remove(0, 1024); term.Append(ch); };
+        cpu.TerminalOutput += ch =>
+        {
+            int c = ch;
+            if (c >= 0x80) c &= 0x7F; // Centurion terminal strings often carry the high bit.
+            if (c == '\r') return;
+            if (c == '\f') { term.Clear(); return; }
+            if (term.Length > 4096) term.Remove(0, 1024);
+            term.Append((char)c);
+        };
     }
 
     public void Run()
@@ -123,6 +153,24 @@ public sealed class Tui
     {
         try
         {
+            if (escapePrefix)
+            {
+                escapePrefix = false;
+                if (k.KeyChar == '=') { ToggleTerminalFocus(); return; }
+                cpu.QueueTerminalInput(0x1B);
+            }
+            if ((k.Key == ConsoleKey.Tab && (k.Modifiers & ConsoleModifiers.Control) != 0) ||
+                (k.KeyChar == '=' && (k.Modifiers & ConsoleModifiers.Alt) != 0))
+            {
+                ToggleTerminalFocus();
+                return;
+            }
+            if (k.Key == ConsoleKey.Escape) { escapePrefix = true; status = "escape prefix"; return; }
+            if (terminalFocus)
+            {
+                SendTerminalKey(k);
+                return;
+            }
             if (k.KeyChar == '[') { refreshMs = Math.Min(1000, refreshMs + 25); status = "refresh " + refreshMs + "ms"; return; }
             if (k.KeyChar == ']') { refreshMs = Math.Max(25, refreshMs - 25); status = "refresh " + refreshMs + "ms"; return; }
             switch (k.Key)
@@ -151,12 +199,25 @@ public sealed class Tui
                 case ConsoleKey.M:
                     EditMemory(); break;
                 default:
-                    if (!char.IsControl(k.KeyChar)) cpu.QueueTerminalInput((byte)k.KeyChar);
-                    else if (k.Key == ConsoleKey.Enter) cpu.QueueTerminalInput((byte)'\n');
+                    SendTerminalKey(k);
                     break;
             }
         }
         catch (Exception ex) { running = false; status = ex.Message; }
+    }
+
+    void ToggleTerminalFocus()
+    {
+        terminalFocus = !terminalFocus;
+        status = terminalFocus ? "terminal focus" : "TUI focus";
+    }
+
+    void SendTerminalKey(ConsoleKeyInfo k)
+    {
+        if (!char.IsControl(k.KeyChar)) cpu.QueueTerminalInput((byte)k.KeyChar);
+        else if (k.Key == ConsoleKey.Enter) cpu.QueueTerminalInput((byte)'\n');
+        else if (k.Key == ConsoleKey.Backspace) cpu.QueueTerminalInput(0x08);
+        else if (k.Key == ConsoleKey.Escape) cpu.QueueTerminalInput(0x1B);
     }
 
     void EditMemory()
@@ -237,8 +298,8 @@ public sealed class Tui
         }
 
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Put(0, h - 2, Pad("s step  r run/pause  n +100  +/- speed  [/ ] refresh  arrows/page mem  home follow-PC  g goto  m edit  p setpc  b break  l load  q quit", w));
-        Console.ResetColor(); Put(0, h - 1, Pad("status: " + status + " | steps " + steps + " | speed " + stepsPerTick + "/tick | refresh " + refreshMs + "ms" + (followPc ? " | follow PC" : ""), w));
+        Put(0, h - 2, Pad("Alt-= terminal focus  s step  r run/pause  n +100  +/- speed  [/ ] refresh  arrows/page mem  home follow-PC  g goto  m edit  p setpc  b break  l load  q quit", w));
+        Console.ResetColor(); Put(0, h - 1, Pad("status: " + status + " | " + (terminalFocus ? "TERMINAL" : "TUI") + " focus | steps " + steps + " | speed " + stepsPerTick + "/tick | refresh " + refreshMs + "ms" + (followPc ? " | follow PC" : ""), w));
         Snapshot();
     }
 
@@ -291,7 +352,7 @@ public sealed class Tui
     void DrawTerminal(int x, int y, int width, int height)
     {
         if (width <= 0 || height <= 0) return;
-        Put(x, y-1, BoxTitle(" Terminal MMIO F201 ", width));
+        Put(x, y-1, BoxTitle(terminalFocus ? " Terminal MMIO F201 [FOCUS] " : " Terminal MMIO F201 ", width));
         string[] lines = term.ToString().Replace("\r", "").Split('\n');
         int start = Math.Max(0, lines.Length - height);
         for (int i = 0; i < height; i++)
@@ -314,6 +375,7 @@ public sealed class Tui
             $"  track {cpu.FloppyTrack:D2}  sector {cpu.FloppySector:D2}  head {cpu.FloppyHead:D1}  size {cpu.FloppySectorSize}",
             $"  geometry {cpu.FloppyTracks}T/{cpu.FloppyHeads}H/{cpu.FloppySectorsPerTrack}S",
             $"DMA            addr {cpu.DmaAddr:X4}  count {cpu.DmaCount:X4}  mode {cpu.DmaMode:X2}",
+            $"FFC F800       cmd {cpu.FfcCommand:X2}  status {cpu.FfcStatus:X2}  result {cpu.FfcResult:X2}  buflen {cpu.FfcCommandLength}",
             $"Memory         64K RAM",
             $"Interrupts     IPL {cpu.Ipl:X1}  FLAGS {cpu.Flags}",
             $"Breakpoint     {(cpu.Breakpoint < 0 ? "----" : cpu.Breakpoint.ToString("X4"))}"
@@ -363,6 +425,8 @@ public sealed class Cpu6
     ushort dmaAddr, dmaCount;
     byte dmaMode;
     byte floppyCommand, floppyStatus = 1, floppyUnit, floppyTrack, floppySector, floppyHead;
+    byte ffcCommand, ffcStatus = 1, ffcResult;
+    byte[] ffcCommandBuffer = new byte[0];
     byte[] floppyImage;
     string floppyPath;
     public int FloppyTracks { get; set; } = 77;
@@ -403,6 +467,8 @@ public sealed class Cpu6
             return 0;
         }
         if (a >= 0xF140 && a <= 0xF145) return ReadFloppyReg(a);
+        if (a == 0xF800) return ffcResult;
+        if (a == 0xF801) return ffcStatus;
         return mem[a];
     }
     void Write8(ushort a, int v)
@@ -411,6 +477,7 @@ public sealed class Cpu6
         if (a == 0xF200) return; // MUX0 control/config
         if (a == 0xF201) { var h = TerminalOutput; if (h != null) h((char)b); else Console.Write((char)b); return; }
         if (a >= 0xF140 && a <= 0xF145) { WriteFloppyReg(a, b); return; }
+        if (a == 0xF800) { WriteFfcCommand(b); return; }
         mem[a] = b;
     }
     ushort Read16(ushort a) { return (ushort)((Read8(a) << 8) | Read8((ushort)(a + 1))); }
@@ -450,7 +517,7 @@ public sealed class Cpu6
     public void Step()
     {
         ushort oldpc = PC; op = Fetch();
-        if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} SP={6:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(SP));
+        if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX));
         if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
     }
 
@@ -477,8 +544,10 @@ public sealed class Cpu6
             case 0: t = (flags & C) != 0; break; case 1: t = (flags & C) == 0; break;
             case 2: t = (flags & N) != 0; break; case 3: t = (flags & N) == 0; break;
             case 4: t = (flags & Z) != 0; break; case 5: t = (flags & Z) == 0; break;
-            case 6: t = (flags & (C | Z)) == 0; break; case 7: t = (flags & C) != 0; break;
-            case 8: case 9: t = (flags & (Z | N)) != 0; break;
+            case 6: t = (flags & C) == 0; break; // BNL/BM-ish: branch when link/carry is clear
+            case 7: t = (flags & N) == 0; break; // BP: plus-or-zero
+            case 8: t = (flags & N) != 0; break; // BGZ/BGT-ish after compare
+            case 9: t = (flags & (N | Z)) != 0; break; // BLE: less-or-equal zero
             default: t = false; break;
         }
         sbyte off = unchecked((sbyte)Fetch()); if (t) PC = (ushort)(PC + off);
@@ -490,7 +559,7 @@ public sealed class Cpu6
         switch (mode & 15)
         {
             case 0: a = PC; PC += (ushort)size; break; case 1: a = PC; PC += 2; indir = 1; break; case 2: a = PC; PC += 2; indir = 2; break;
-            case 3: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); indir = 1; break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); indir = 2; break; }
+            case 3: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); a = (ushort)(PC + off); indir = 1; break; }
             case 5: a = Indexed(size); break; default: a = RegPair(mode & 7); break;
         }
         while (indir-- > 0) a = Read16(a); return a;
@@ -514,8 +583,23 @@ public sealed class Cpu6
         switch (op) { case 0x30: Inc16(r); break; case 0x31: Dec16(r); break; case 0x32: SetRegPair(r, 0); Flag16(0, false, 0); break; case 0x33: SetRegPair(r, (ushort)~RegPair(r)); Flag16(RegPair(r), false, 0); break; case 0x34: Shr16(r); break; case 0x35: Shl16(r); break; case 0x36: Rrc16(r); break; case 0x37: Rlc16(r); break; case 0x38: Inc16(AX); break; case 0x39: Dec16(AX); break; case 0x3A: SetRegPair(AX, 0); Flag16(0, false, 0); break; case 0x3B: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break; case 0x3C: Shr16(AX); break; case 0x3D: Shl16(AX); break; case 0x3E: Inc16(RT); break; case 0x3F: Dec16(RT); break; }
     }
     void Alu8() { int s = AL, d = BL; if ((op & 8) == 0) { byte e = Fetch(); s = e >> 4; d = e & 15; } switch (op & 7) { case 0: Add8(d, s); break; case 1: Sub8(d, s); break; case 2: And8(d, s); break; case 3: Or8(d, s); break; case 4: Xor8(d, s); break; case 5: Reg(d, Reg(s)); Flag8(Reg(d), false, 0); break; default: Unknown(); break; } }
-    void Alu16() { int s = AX, d = BX; if ((op & 8) == 0) { byte e = Fetch(); s = e >> 5; d = (e & 15) >> 1; } switch (op & 7) { case 0: Add16(d, s); break; case 1: Sub16(d, s); break; case 2: And16(d, s); break; case 3: Or16(d, s); break; case 4: Xor16(d, s); break; case 5: SetRegPair(d, RegPair(s)); Flag16(RegPair(d), false, 0); break; default: Unknown(); break; } }
-    void Dma() { byte e = Fetch(); int rp = e >> 4; switch (e & 15) { case 0: dmaAddr = RegPair(rp); break; case 1: SetRegPair(rp, dmaAddr); break; case 2: dmaCount = RegPair(rp); break; case 3: SetRegPair(rp, dmaCount); break; case 4: dmaMode = (byte)rp; break; case 6: break; default: Unknown(); break; } }
+    void Alu16() { if (op == 0x5F) { SetRegPair(SP, RegPair(AX)); return; } int s = AX, d = BX; if ((op & 8) == 0) { byte e = Fetch(); s = e >> 5; d = (e & 15) >> 1; } switch (op & 7) { case 0: Add16(d, s); break; case 1: Sub16(d, s); break; case 2: And16(d, s); break; case 3: Or16(d, s); break; case 4: Xor16(d, s); break; case 5: SetRegPair(d, RegPair(s)); Flag16(RegPair(d), false, 0); break; default: Unknown(); break; } }
+    void Dma()
+    {
+        byte e = Fetch();
+        int hi = e >> 4;
+        int rp = hi >> 1; // DMA register operands use byte-register encoding: 0=A, A=S, etc.
+        switch (e & 15)
+        {
+            case 0: dmaAddr = RegPair(rp); break;
+            case 1: SetRegPair(rp, dmaAddr); break;
+            case 2: dmaCount = RegPair(rp); break;
+            case 3: SetRegPair(rp, dmaCount); break;
+            case 4: dmaMode = (byte)hi; break;
+            case 6: break;
+            default: Unknown(); break;
+        }
+    }
 
     byte ReadFloppyReg(ushort a)
     {
@@ -563,6 +647,73 @@ public sealed class Cpu6
             throw;
         }
     }
+
+    void WriteFfcCommand(byte cmd)
+    {
+        ffcCommand = cmd; ffcStatus = 0; ffcResult = 0;
+        try
+        {
+            switch (cmd)
+            {
+                case 0x43: FfcLoadCommandBuffer(); break; // DMA command bytes from CPU to FFC
+                case 0x45: FfcExecuteCommandBuffer(); break; // execute buffered disk command, DMA data
+                default: ffcResult = 0x80; break;
+            }
+        }
+        catch
+        {
+            ffcResult = 0x80;
+            throw;
+        }
+        finally { ffcStatus = 1; }
+    }
+
+    int DmaTransferCount()
+    {
+        // Centurion boot code programs DMA count as one's-complement-ish FFFF-n;
+        // the hardware transfers 0x10000-count bytes.
+        return dmaCount >= 0x8000 ? 0x10000 - dmaCount : dmaCount;
+    }
+
+    void FfcLoadCommandBuffer()
+    {
+        int count = DmaTransferCount();
+        if (count <= 0) count = 1;
+        if (dmaAddr + count > 65536) throw new InvalidOperationException("FFC command DMA crosses memory end");
+        ffcCommandBuffer = new byte[count];
+        Buffer.BlockCopy(mem, dmaAddr, ffcCommandBuffer, 0, count);
+    }
+
+    void FfcExecuteCommandBuffer()
+    {
+        EnsureFloppy();
+        int unit = 0, track = 0, sector = 0, bytes = DmaTransferCount();
+        bool read = false, write = false;
+        for (int i = 0; i < ffcCommandBuffer.Length; )
+        {
+            byte c = ffcCommandBuffer[i++];
+            if (c == 0xFF) break;
+            switch (c)
+            {
+                case 0x81: if (i < ffcCommandBuffer.Length) unit = ffcCommandBuffer[i++]; break;
+                case 0x83: if (i < ffcCommandBuffer.Length) track = ffcCommandBuffer[i++]; break;
+                case 0x88: read = true; if (i < ffcCommandBuffer.Length) sector = ffcCommandBuffer[i++]; if (i < ffcCommandBuffer.Length) i++; if (i + 1 < ffcCommandBuffer.Length) { bytes = (ffcCommandBuffer[i++] << 8) | ffcCommandBuffer[i++]; } break;
+                case 0x89: write = true; if (i < ffcCommandBuffer.Length) sector = ffcCommandBuffer[i++]; if (i < ffcCommandBuffer.Length) i++; if (i + 1 < ffcCommandBuffer.Length) { bytes = (ffcCommandBuffer[i++] << 8) | ffcCommandBuffer[i++]; } break;
+                default: break;
+            }
+        }
+        if (!read && !write) { ffcResult = 0x40; return; }
+        if (bytes <= 0) bytes = DmaTransferCount();
+        int imageOffset = ((track * FloppySectorsPerTrack) + sector) * FloppySectorSize;
+        if (track < 0 || track >= FloppyTracks || sector < 0 || sector >= FloppySectorsPerTrack) throw new InvalidOperationException("FFC floppy address out of range");
+        if (imageOffset + bytes > floppyImage.Length) bytes = Math.Max(0, floppyImage.Length - imageOffset);
+        if (dmaAddr + bytes > 65536) throw new InvalidOperationException("FFC data DMA crosses memory end");
+        if (read) Buffer.BlockCopy(floppyImage, imageOffset, mem, dmaAddr, bytes);
+        else { Buffer.BlockCopy(mem, dmaAddr, floppyImage, imageOffset, bytes); SaveFloppy(); }
+        floppyUnit = (byte)unit; floppyTrack = (byte)track; floppySector = (byte)sector; floppyHead = 0; floppyStatus = 1;
+        ffcResult = 0;
+    }
+
     void FloppyTransfer(bool read)
     {
         EnsureFloppy();
@@ -636,6 +787,10 @@ public sealed class Cpu6
     public ushort DmaCount { get { return dmaCount; } }
     public byte DmaMode { get { return dmaMode; } }
     public bool FloppyMounted { get { return floppyImage != null; } }
+    public byte FfcCommand { get { return ffcCommand; } }
+    public byte FfcStatus { get { return ffcStatus; } }
+    public byte FfcResult { get { return ffcResult; } }
+    public int FfcCommandLength { get { return ffcCommandBuffer == null ? 0 : ffcCommandBuffer.Length; } }
     public byte FloppyCommand { get { return floppyCommand; } }
     public byte FloppyStatus { get { return floppyStatus; } }
     public byte FloppyUnit { get { return floppyUnit; } }
