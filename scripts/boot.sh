@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROM="${ROM:-$ROOT/roms/bootstrap_unscrambled.bin}"
 FLOPPY="${FLOPPY:-$ROOT/roms/floppy.img}"
-BOOT_KEYS="${BOOT_KEYS:-F0}"
+BOOT_KEYS="${BOOT_KEYS:-F0\\r}"
 
 exec dotnet run --project "$ROOT" -- \
   --boot-rom "$ROM" \

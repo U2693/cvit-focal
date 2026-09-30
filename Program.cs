@@ -649,7 +649,20 @@ public sealed class Cpu6
         byte b = (byte)v;
         if (a == 0xF200) return; // MUX0 control/config
         if (a == 0xF20A || a == 0xF20E) { muxInterruptEnabled = b != 0; mem[a] = b; return; } // MUX interrupt-ish enables used by WIPL
-        if (a == 0xF201) { var h = TerminalOutput; if (h != null) h((char)b); else Console.Write((char)b); return; }
+        if (a == 0xF201)
+        {
+            var h = TerminalOutput;
+            if (h != null) h((char)b);
+            else
+            {
+                int c = b;
+                if (c >= 0x80) c &= 0x7F; // keep headless boot logs readable too
+                if (c == '\r') return;
+                if (c == '\f') Console.WriteLine();
+                else Console.Write((char)c);
+            }
+            return;
+        }
         if (a >= 0xF140 && a <= 0xF145) { WriteFloppyReg(a, b); return; }
         if (a == 0xF800) { WriteFfcCommand(b); return; }
         mem[a] = b;
@@ -1005,9 +1018,7 @@ public sealed class Cpu6
             {
                 case 0x43: FfcLoadCommandBuffer(); break; // DMA command bytes from CPU to FFC
                 case 0x45:
-                    bool bootstrapFfcExecute = PC >= 0xFC00;
                     FfcExecuteCommandBuffer();
-                    if (bootstrapFfcExecute) DropOnePendingTerminalTerminator();
                     break; // execute buffered disk command, DMA data
                 default: ffcResult = 0x80; break;
             }
@@ -1025,13 +1036,6 @@ public sealed class Cpu6
         // Centurion boot code programs DMA count as one's-complement-ish FFFF-n;
         // the hardware transfers 0x10000-count bytes.
         return dmaCount >= 0x8000 ? 0x10000 - dmaCount : dmaCount;
-    }
-
-    void DropOnePendingTerminalTerminator()
-    {
-        if (terminalInput.Count == 0) return;
-        byte b = terminalInput.Peek();
-        if (b == (byte)'\r' || b == (byte)'\n') terminalInput.Dequeue();
     }
 
     void FfcLoadCommandBuffer()

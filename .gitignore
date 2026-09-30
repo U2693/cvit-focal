@@ -1,5 +1,7 @@
 bin/
 obj/
 roms/
-*log
+*.log
+!devlog/
+!devlog/**
 xxx
