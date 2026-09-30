@@ -34,53 +34,27 @@ The current `roms/cops.img` was produced from **side 0 only** so it can be mount
 77 tracks * 20 sectors/track * 400 bytes/sector = 616000 bytes
 ```
 
-## One-off conversion script
+## Conversion script
 
-```python
-from pathlib import Path
-import struct
+The extractor now lives at `scripts/extract_hfe_sectors.py`:
 
-src = Path('../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe')
-dst = Path('roms/cops.img')
-h = src.read_bytes()
-assert h[:8] == b'HXCPICFE'
-
-tracks = h[9]
-sides = h[10]
-track_table = struct.unpack_from('<H', h, 18)[0] * 512
-sector_size = 400
-sectors_per_track = 20
-payload_offset = 75
-
-def decode_track_side(track, side):
-    off_blocks, length = struct.unpack_from('<HH', h, track_table + track * 4)
-    raw = h[off_blocks * 512:off_blocks * 512 + length]
-
-    # HFE alternates side data in 256-byte chunks.
-    sidebytes = b''.join(
-        raw[i + side * 256:i + (side + 1) * 256]
-        for i in range(0, len(raw), 512)
-    )
-
-    bits = [(byte >> bit) & 1 for byte in sidebytes for bit in range(8)]
-    out = bytearray()
-    for k in range(6, len(bits) - 16, 16):
-        value = 0
-        for j in range(8):
-            value = (value << 1) | bits[k + j * 2 + 1]
-        out.append(value)
-    return bytes(out)
-
-# Side 0 only for current biscvit single-head geometry.
-image = bytearray()
-for track in range(tracks):
-    decoded = decode_track_side(track, 0)
-    payload = decoded[payload_offset:payload_offset + sectors_per_track * sector_size]
-    image.extend(payload.ljust(sectors_per_track * sector_size, b'\x00'))
-
-dst.write_bytes(image)
-print(f'wrote {dst}: {len(image)} bytes')
+```sh
+scripts/extract_hfe_sectors.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
 ```
+
+It decodes each side stream as above, then extracts individual 400-byte sector payloads.  On normally formatted tracks the sector payload starts immediately after an 8-byte per-sector header following the observed `FF` gap.  The resulting side-0 image size is:
+
+```text
+77 tracks * 20 sectors/track * 400 bytes/sector = 616000 bytes
+```
+
+For a two-head track/head/sector ordered image:
+
+```sh
+scripts/extract_hfe_sectors.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
+```
+
+Track 0 side 0 of `CentOpSys.hfe` is a special bootstrap track that does not show the normal per-sector `FF` gap pattern, so the script falls back to the earlier contiguous payload extraction at decoded offset `75` for that track side.
 
 ## Validation
 
