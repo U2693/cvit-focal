@@ -739,9 +739,9 @@ public sealed class Cpu6
             case 0: t = (flags & C) != 0; break; case 1: t = (flags & C) == 0; break;
             case 2: t = (flags & N) != 0; break; case 3: t = (flags & N) == 0; break;
             case 4: t = (flags & Z) != 0; break; case 5: t = (flags & Z) == 0; break;
-            case 6: t = (flags & C) == 0; break; // BNL/BM-ish: branch when link/carry is clear
-            case 7: t = (flags & N) == 0; break; // BP: plus-or-zero
-            case 8: t = (flags & N) != 0; break; // BGZ/BGT-ish after compare
+            case 6: t = (flags & N) != 0; break; // BM: branch on minus
+            case 7: t = (flags & N) == 0; break; // BP: branch on plus
+            case 8: t = (flags & (N | Z)) == 0; break; // BGZ: not minus and not zero
             case 9: t = (flags & (N | Z)) != 0; break; // BLE: less-or-equal zero
             case 14: t = (flags & I) != 0; break;
             case 15: t = false; break; // clock interrupt enable is not modelled yet
@@ -835,7 +835,7 @@ public sealed class Cpu6
         if (op == 0x76) { ipl = 15; return; }
         if (op == 0x7E) { PushBytes(); return; }
         if (op == 0x7F) { PopBytes(); return; }
-        ushort n; switch (op & 7) { case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); n = Read16((ushort)(PC + off)); break; } case 5: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(RegPair(AX) + off); break; } default: Unknown(); return; }
+        ushort n; switch (op & 7) { case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); n = Read16((ushort)(PC + off)); break; } case 5: n = Indexed(2); break; default: Unknown(); return; }
         if ((op & 8) != 0) { Push(RegPair(RT)); SetRegPair(RT, PC); } PC = n;
     }
     void PushBytes()
@@ -908,7 +908,7 @@ public sealed class Cpu6
         switch (op & 7)
         {
             case 0: { int r = dst + src; result = (ushort)r; SetRegPair(d, result); Flag16(r, true, r > 0xFFFF ? 1 : 0); break; }
-            case 1: { int r = dst - src; result = (ushort)r; SetRegPair(d, result); Flag16(r, true, r < 0 ? 1 : 0); break; }
+            case 1: { int r = src - dst; result = (ushort)r; SetRegPair(d, result); Flag16(r, true, r >= 0 ? 1 : 0); break; } // dst = src - dst; L set when no borrow
             case 2: result = (ushort)(dst & src); SetRegPair(d, result); Flag16(result, false, 0); break;
             case 3: result = (ushort)(dst | src); SetRegPair(d, result); Flag16(result, false, 0); break;
             case 4: result = (ushort)(dst ^ src); SetRegPair(d, result); Flag16(result, false, 0); break;
@@ -1102,11 +1102,11 @@ public sealed class Cpu6
     }
 
     void Inc8(int r) { int v = Reg(r) + 1; Reg(r, v); Flag8(v, false, 0); } void Dec8(int r) { int v = Reg(r) - 1; Reg(r, v); Flag8(v, false, 0); }
-    void Add8(int d, int s) { int v = Reg(d) + Reg(s); Reg(d, v); Flag8(v, true, v & 0x100); } void Sub8(int d, int s) { int v = Reg(d) - Reg(s); Reg(d, v); Flag8(v, true, v & 0x100); }
+    void Add8(int d, int s) { int v = Reg(d) + Reg(s); Reg(d, v); Flag8(v, true, v & 0x100); } void Sub8(int d, int s) { int v = Reg(s) - Reg(d); Reg(d, v); Flag8(v, true, v >= 0 ? 1 : 0); } // dst = src - dst; L set when no borrow
     void And8(int d, int s) { int v = Reg(d) & Reg(s); Reg(d, v); Flag8(v, true, 0); } void Or8(int d, int s) { int v = Reg(d) | Reg(s); Reg(d, v); Flag8(v, true, 0); } void Xor8(int d, int s) { int v = Reg(d) ^ Reg(s); Reg(d, v); Flag8(v, true, 0); }
     void Shl8(int r) { int v = Reg(r); Reg(r, v << 1); Flag8(v << 1, true, v & 0x80); } void Shr8(int r) { int v = Reg(r); Reg(r, v >> 1); Flag8(v >> 1, true, v & 1); } void Rlc8(int r) { int v = Reg(r); int c = v & 0x80; v = ((v << 1) | ((flags & C) != 0 ? 1 : 0)) & 0xFF; Reg(r, v); Flag8(v, true, c); } void Rrc8(int r) { int v = Reg(r); int c = v & 1; v = (v >> 1) | ((flags & C) != 0 ? 0x80 : 0); Reg(r, v); Flag8(v, true, c); }
     void Inc16(int r) { int v = RegPair(r) + 1; SetRegPair(r, (ushort)v); Flag16(v, false, 0); } void Dec16(int r) { int v = RegPair(r) - 1; SetRegPair(r, (ushort)v); Flag16(v, false, 0); }
-    void Add16(int d, int s) { int v = RegPair(d) + RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, v & 0x10000); } void Sub16(int d, int s) { int v = RegPair(d) - RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, v & 0x10000); }
+    void Add16(int d, int s) { int v = RegPair(d) + RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, v & 0x10000); } void Sub16(int d, int s) { int v = RegPair(s) - RegPair(d); SetRegPair(d, (ushort)v); Flag16(v, true, v >= 0 ? 1 : 0); }
     void And16(int d, int s) { int v = RegPair(d) & RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); } void Or16(int d, int s) { int v = RegPair(d) | RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); } void Xor16(int d, int s) { int v = RegPair(d) ^ RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); }
     void Shl16(int r) { int v = RegPair(r); SetRegPair(r, (ushort)(v << 1)); Flag16(v << 1, true, v & 0x8000); } void Shr16(int r) { int v = RegPair(r); SetRegPair(r, (ushort)(v >> 1)); Flag16(v >> 1, true, v & 1); } void Rlc16(int r) { int v = RegPair(r); int c = v & 0x8000; v = ((v << 1) | ((flags & C) != 0 ? 1 : 0)) & 0xFFFF; SetRegPair(r, (ushort)v); Flag16(v, true, c); } void Rrc16(int r) { int v = RegPair(r); int c = v & 1; v = (v >> 1) | ((flags & C) != 0 ? 0x8000 : 0); SetRegPair(r, (ushort)v); Flag16(v, true, c); }
 
