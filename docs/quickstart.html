@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>biscvit quickstart</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; line-height: 1.45; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { background: #f6f8fa; padding: 1rem; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: .35rem .5rem; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>biscvit quickstart</h1>
+
+  <p><b>biscvit</b> is a small C# terminal UI emulator/monitor for the Centurion CPU6.</p>
+
+  <h2>Build</h2>
+  <pre><code>dotnet build</code></pre>
+
+  <h2>Run the bundled bootstrap + floppy image</h2>
+  <pre><code>./scripts/boot.sh</code></pre>
+
+  <p>The script loads <code>roms/bootstrap_unscrambled.bin</code>, mounts <code>roms/floppy.img</code>,
+  and configures the floppy geometry used by the local image.</p>
+
+  <h2>Useful scripted boot keys</h2>
+  <pre><code>BOOT_KEYS=$'F0\r' ./scripts/boot.sh</code></pre>
+
+  <p>Terminal input is old-system style: the monitor/WIPL wants carriage return
+  (<code>\r</code>), not line feed (<code>\n</code>).</p>
+
+  <h2>TUI keys</h2>
+  <table>
+    <tr><th>Key</th><th>Action</th></tr>
+    <tr><td><code>Alt-=</code> or <code>Esc</code> then <code>=</code></td><td>Toggle terminal focus</td></tr>
+    <tr><td><code>s</code></td><td>Step one instruction</td></tr>
+    <tr><td><code>r</code></td><td>Run/pause</td></tr>
+    <tr><td><code>n</code></td><td>Step 100 instructions</td></tr>
+    <tr><td><code>+</code> / <code>-</code></td><td>Adjust run speed</td></tr>
+    <tr><td><code>[</code> / <code>]</code></td><td>Adjust refresh rate</td></tr>
+    <tr><td>Arrows / Page Up / Page Down</td><td>Scroll memory pane</td></tr>
+    <tr><td><code>Home</code></td><td>Follow PC in memory pane</td></tr>
+    <tr><td><code>g</code></td><td>Goto memory address</td></tr>
+    <tr><td><code>m</code></td><td>Edit memory bytes</td></tr>
+    <tr><td><code>p</code></td><td>Set PC</td></tr>
+    <tr><td><code>b</code></td><td>Set/clear breakpoint</td></tr>
+    <tr><td><code>l</code></td><td>Load binary</td></tr>
+    <tr><td><code>q</code> or <code>F10</code></td><td>Quit</td></tr>
+  </table>
+
+  <h2>Common command-line forms</h2>
+  <pre><code>dotnet run -- --load roms/loopback.bin 0100 --pc 0100
+
+dotnet run -- \
+  --boot-rom roms/bootstrap_unscrambled.bin \
+  --floppy roms/floppy.img \
+  --floppy-sector-size 400 \
+  --floppy-sectors-per-track 20 \
+  --floppy-heads 1 \
+  --floppy-tracks 77</code></pre>
+
+  <h2>Notes from WIPL debugging</h2>
+  <ul>
+    <li>After the bootstrap loads WIPL, code around <code>0588</code> is disk-image code loaded at <code>0100</code>.</li>
+    <li>The loop at <code>0588</code> polls <code>IL6(A)</code> for terminal input.</li>
+    <li>Printable terminal characters are often converted to high-bit form: <code>'1'</code> becomes <code>B1</code>.</li>
+    <li><code>F201</code> is terminal data MMIO; writes appear in the terminal pane.</li>
+  </ul>
+</body>
+</html>

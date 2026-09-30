@@ -215,7 +215,7 @@ public sealed class Tui
     void SendTerminalKey(ConsoleKeyInfo k)
     {
         if (!char.IsControl(k.KeyChar)) cpu.QueueTerminalInput((byte)k.KeyChar);
-        else if (k.Key == ConsoleKey.Enter) cpu.QueueTerminalInput((byte)'\n');
+        else if (k.Key == ConsoleKey.Enter) cpu.QueueTerminalInput((byte)'\r');
         else if (k.Key == ConsoleKey.Backspace) cpu.QueueTerminalInput(0x08);
         else if (k.Key == ConsoleKey.Escape) cpu.QueueTerminalInput(0x1B);
     }
@@ -327,7 +327,7 @@ public sealed class Tui
         string inst, args = "";
         if (op < 0x10)
         {
-            inst = op switch { 0x00 => "HALT", 0x01 => "NOP", 0x02 => "SN", 0x03 => "RN", 0x04 => "EI", 0x05 => "DI", 0x06 => "SC", 0x07 => "RC", 0x08 => "CLF", 0x09 => "RSR", 0x0E => "DLY", 0x0F => "RSYS", _ => "LOW" };
+            inst = op switch { 0x00 => "HALT", 0x01 => "NOP", 0x02 => "SF", 0x03 => "RF", 0x04 => "EI", 0x05 => "DI", 0x06 => "SL", 0x07 => "RL", 0x08 => "CL", 0x09 => "RSR", 0x0A => "RI", 0x0B => "RIM", 0x0D => "PCX", 0x0E => "DLY", 0x0F => "RSV", _ => "LOW" };
         }
         else if (op < 0x20)
         {
@@ -540,7 +540,7 @@ public sealed class Tui
             $"DMA            addr {cpu.DmaAddr:X4}  count {cpu.DmaCount:X4}  mode {cpu.DmaMode:X2}",
             $"FFC F800       cmd {cpu.FfcCommand:X2}  status {cpu.FfcStatus:X2}  result {cpu.FfcResult:X2}  buflen {cpu.FfcCommandLength}",
             $"Memory         64K RAM",
-            $"Interrupts     IPL {cpu.Ipl:X1}  FLAGS {cpu.Flags}",
+            $"Interrupts     IPL {cpu.Ipl:X1}  depth {cpu.InterruptDepth}  FLAGS {cpu.Flags}",
             $"Breakpoint     {(cpu.Breakpoint < 0 ? "----" : cpu.Breakpoint.ToString("X4"))}"
         };
         for (int i = 0; i < rows; i++)
@@ -585,12 +585,14 @@ public sealed class Cpu6
     readonly byte[] mem = new byte[65536];
     readonly Queue<byte> terminalInput = new Queue<byte>();
     byte flags, ipl, op;
+    readonly Stack<InterruptFrame> interruptStack = new Stack<InterruptFrame>();
     ushort dmaAddr, dmaCount;
     byte dmaMode;
     byte floppyCommand, floppyStatus = 1, floppyUnit, floppyTrack, floppySector, floppyHead;
     byte ffcCommand, ffcStatus = 1, ffcResult;
     byte[] ffcCommandBuffer = new byte[0];
     byte[] floppyImage;
+    bool muxInterruptEnabled;
     string floppyPath;
     public int FloppyTracks { get; set; } = 77;
     public int FloppyHeads { get; set; } = 2;
@@ -601,6 +603,14 @@ public sealed class Cpu6
     public bool Trace { get; set; }
     public int Breakpoint = -1;
     public event Action<char> TerminalOutput;
+
+    struct InterruptFrame
+    {
+        public byte Ipl;
+        public ushort Pc;
+        public byte Flags;
+        public InterruptFrame(byte ipl, ushort pc, byte flags) { Ipl = ipl; Pc = pc; Flags = flags; }
+    }
 
     public Cpu6() { PC = 0x0100; SetRegPair(SP, 0xFFFE); }
     public void Load(byte[] bytes, ushort address) { if (address + bytes.Length > 65536) throw new ArgumentException("load does not fit memory"); Buffer.BlockCopy(bytes, 0, mem, address, bytes.Length); }
@@ -638,6 +648,7 @@ public sealed class Cpu6
     {
         byte b = (byte)v;
         if (a == 0xF200) return; // MUX0 control/config
+        if (a == 0xF20A || a == 0xF20E) { muxInterruptEnabled = b != 0; mem[a] = b; return; } // MUX interrupt-ish enables used by WIPL
         if (a == 0xF201) { var h = TerminalOutput; if (h != null) h((char)b); else Console.Write((char)b); return; }
         if (a >= 0xF140 && a <= 0xF145) { WriteFloppyReg(a, b); return; }
         if (a == 0xF800) { WriteFfcCommand(b); return; }
@@ -679,9 +690,27 @@ public sealed class Cpu6
 
     public void Step()
     {
+        ServiceInterrupts();
         ushort oldpc = PC; op = Fetch();
         if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX));
         if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
+    }
+
+    void ServiceInterrupts()
+    {
+        if ((flags & I) == 0) return;
+        // Centurion MUX input is observed in WIPL as a level-6 interrupt.  The
+        // boot code installs the level's entry PC in interlevel register P/HX
+        // via SAR 6,P and then polls LAR 6,A for the character deposited by
+        // the interrupt routine.
+        if (!muxInterruptEnabled || terminalInput.Count == 0 || ipl >= 6) return;
+        ushort vector = ReadInterLevelPair(6, HX);
+        if (vector == 0 || ReadInterLevelPair(6, AX) != 0) return;
+        interruptStack.Push(new InterruptFrame(ipl, PC, flags));
+        ipl = 6;
+        PC = vector;
+        flags = (byte)(flags & unchecked((byte)~I));
+        Halted = false;
     }
 
     void Low()
@@ -692,10 +721,13 @@ public sealed class Cpu6
             case 0x02: flags |= N; break; case 0x03: flags &= unchecked((byte)~N); break;
             case 0x04: flags |= I; break; case 0x05: flags &= unchecked((byte)~I); break;
             case 0x06: flags |= C; break; case 0x07: flags &= unchecked((byte)~C); break;
-            case 0x08: flags = 0; break;
+            case 0x08: flags = (byte)(flags ^ C); break;
             case 0x09: PC = RegPair(RT); SetRegPair(RT, Pop()); break;
-            case 0x0A: case 0x0E: break;
-            case 0x0F: ipl = 15; break; // rsys-ish convenience
+            case 0x0A: ReturnInterrupt(restoreFlags: true); break;
+            case 0x0B: ReturnInterrupt(restoreFlags: false); break;
+            case 0x0D: SetRegPair(RT, PC); break;
+            case 0x0E: break;
+            case 0x0F: ReturnInterrupt(restoreFlags: true); break;
             default: Unknown(); break;
         }
     }
@@ -711,9 +743,21 @@ public sealed class Cpu6
             case 7: t = (flags & N) == 0; break; // BP: plus-or-zero
             case 8: t = (flags & N) != 0; break; // BGZ/BGT-ish after compare
             case 9: t = (flags & (N | Z)) != 0; break; // BLE: less-or-equal zero
+            case 14: t = (flags & I) != 0; break;
+            case 15: t = false; break; // clock interrupt enable is not modelled yet
             default: t = false; break;
         }
         sbyte off = unchecked((sbyte)Fetch()); if (t) PC = (ushort)(PC + off);
+    }
+
+    void ReturnInterrupt(bool restoreFlags)
+    {
+        if (interruptStack.Count == 0) { if (op == 0x0F) ipl = 15; return; }
+        InterruptFrame f = interruptStack.Pop();
+        PC = f.Pc;
+        ipl = f.Ipl;
+        if (restoreFlags) flags = f.Flags;
+        else flags |= I;
     }
     ushort Indexed(int size)
     {
@@ -752,24 +796,26 @@ public sealed class Cpu6
         if (op == 0xF6) { Xio(); return; }
         int m = op & 15; bool b = (op & 0x40) != 0; ushort a; switch (op & 0x30) { case 0x00: a = Addr(1, m); Reg(b ? BL : AL, Read8(a)); Flag8(Reg(b ? BL : AL), false, 0); break; case 0x10: a = Addr(2, m); SetRegPair(b ? BX : AX, Read16(a)); Flag16(RegPair(b ? BX : AX), false, 0); break; case 0x20: a = Addr(1, m); Write8(a, Reg(b ? BL : AL)); break; case 0x30: a = Addr(2, m); Write16(a, RegPair(b ? BX : AX)); break; }
     }
+    ushort InterLevelAddr(int level, int reg) { return (ushort)((level << 4) | (reg & 14)); }
+    ushort InterLevelPairAddr(int level, int pair) { return InterLevelAddr(level, pair << 1); }
+    ushort ReadInterLevelWord(int level, int reg) { ushort a = InterLevelAddr(level, reg); return (ushort)((Read8(a) << 8) | Read8((ushort)(a + 1))); }
+    ushort ReadInterLevelPair(int level, int pair) { ushort a = InterLevelPairAddr(level, pair); return (ushort)((Read8(a) << 8) | Read8((ushort)(a + 1))); }
+    void WriteInterLevelWord(int level, int reg, int v) { ushort a = InterLevelAddr(level, reg); Write8(a, v >> 8); Write8((ushort)(a + 1), v); }
     void InterLevelStore()
     {
         byte e = Fetch();
         int level = e >> 4, reg = e & 15;
-        ushort baseAddr = (ushort)((level << 4) | (reg & 14));
-        Write8(baseAddr, Reg(AH));
-        Write8((ushort)(baseAddr + 1), Reg(AL));
+        WriteInterLevelWord(level, reg, RegPair(AX));
     }
     void InterLevelLoad()
     {
         byte e = Fetch();
         int level = e >> 4, reg = e & 15;
-        ushort baseAddr = (ushort)((level << 4) | (reg & 14));
-        // WIPL waits on IL6(A), which real hardware fills from a MUX interrupt.
-        // We do not emulate interrupts yet, so deliver queued terminal input here.
-        if (e == 0x60 && Read16(baseAddr) == 0 && terminalInput.Count != 0)
-            Write16(baseAddr, terminalInput.Dequeue());
-        SetRegPair(AX, (ushort)((Read8(baseAddr) << 8) | Read8((ushort)(baseAddr + 1))));
+        // Compatibility path for code that polls IL6(A) before it has enabled
+        // the real interrupt path.
+        if (e == 0x60 && ReadInterLevelPair(6, AX) == 0 && terminalInput.Count != 0 && ((flags & I) == 0 || ReadInterLevelPair(6, HX) == 0))
+            WriteInterLevelWord(6, AX, terminalInput.Dequeue());
+        SetRegPair(AX, ReadInterLevelWord(level, reg));
         Flag16(RegPair(AX), false, 0);
     }
     void Xio()
@@ -779,6 +825,7 @@ public sealed class Cpu6
         ushort a = (ushort)(RegPair(EX) + off); // Z register is the device base in WIPL's XIO forms.
         if (spec == 0x19) Write8(a, Reg(AL));
         else if (spec == 0x39) Write8(a, Reg(BL));
+        else if (spec == 0x18) { Reg(AL, Read8(a)); Flag8(Reg(AL), false, 0); }
         else if (spec == 0x38) { Reg(BL, Read8(a)); Flag8(Reg(BL), false, 0); }
         else Unknown();
     }
@@ -957,7 +1004,11 @@ public sealed class Cpu6
             switch (cmd)
             {
                 case 0x43: FfcLoadCommandBuffer(); break; // DMA command bytes from CPU to FFC
-                case 0x45: FfcExecuteCommandBuffer(); break; // execute buffered disk command, DMA data
+                case 0x45:
+                    bool bootstrapFfcExecute = PC >= 0xFC00;
+                    FfcExecuteCommandBuffer();
+                    if (bootstrapFfcExecute) DropOnePendingTerminalTerminator();
+                    break; // execute buffered disk command, DMA data
                 default: ffcResult = 0x80; break;
             }
         }
@@ -974,6 +1025,13 @@ public sealed class Cpu6
         // Centurion boot code programs DMA count as one's-complement-ish FFFF-n;
         // the hardware transfers 0x10000-count bytes.
         return dmaCount >= 0x8000 ? 0x10000 - dmaCount : dmaCount;
+    }
+
+    void DropOnePendingTerminalTerminator()
+    {
+        if (terminalInput.Count == 0) return;
+        byte b = terminalInput.Peek();
+        if (b == (byte)'\r' || b == (byte)'\n') terminalInput.Dequeue();
     }
 
     void FfcLoadCommandBuffer()
@@ -1084,6 +1142,7 @@ public sealed class Cpu6
     public string Flags { get { return FlagString(); } }
     public byte Ipl { get { return ipl; } }
     public int TerminalInputCount { get { return terminalInput.Count; } }
+    public int InterruptDepth { get { return interruptStack.Count; } }
     public ushort DmaAddr { get { return dmaAddr; } }
     public ushort DmaCount { get { return dmaCount; } }
     public byte DmaMode { get { return dmaMode; } }

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CPU6 ISA reference notes</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; line-height: 1.45; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { background: #f6f8fa; padding: 1rem; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid #ddd; padding: .35rem .5rem; text-align: left; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <h1>CPU6 ISA reference notes</h1>
+
+  <p>This is a working reference for the subset of Centurion CPU6 implemented by
+  <code>biscvit</code>. It reflects emulator behavior and observations from the bootstrap/WIPL image;
+  it is not yet a complete vendor manual.</p>
+
+  <h2>Registers and levels</h2>
+  <p>CPU6 has 16 byte registers per level, grouped as 8 word pairs:</p>
+  <table>
+    <tr><th>Pair</th><th>Bytes</th><th>Common name</th></tr>
+    <tr><td>AX</td><td>AH:AL</td><td>Accumulator</td></tr>
+    <tr><td>BX</td><td>BH:BL</td><td>Secondary accumulator</td></tr>
+    <tr><td>RT</td><td>RH:RL</td><td>Return register</td></tr>
+    <tr><td>DX</td><td>DH:DL</td><td>Data/index</td></tr>
+    <tr><td>EX</td><td>EH:EL</td><td>Often device base / index</td></tr>
+    <tr><td>SP</td><td>SH:SL</td><td>Stack pointer</td></tr>
+    <tr><td>GX</td><td>GH:GL</td><td>General</td></tr>
+    <tr><td>HX</td><td>HH:HL</td><td>General</td></tr>
+  </table>
+
+  <p>The emulator models interlevel registers as register banks addressed by
+  <code>(level &lt;&lt; 4) | register</code>. For example <code>IL6(A)</code> is word <code>0060</code>.
+  The word pairs are <code>A,B,X,Y,Z,S,C,P</code>; in emulator names these are
+  <code>AX,BX,RT,DX,EX,SP,GX,HX</code>. WIPL installs its MUX input interrupt entry
+  with <code>SAR 6,P</code>, so the emulator treats level-6 <code>P/HX</code> as the level-6
+  interrupt PC. WIPL polls <code>IL6(A)</code> for terminal input:</p>
+  <pre><code>0588: E6 60    ILLD IL6(AX),AX
+058A: 45 10    XFRB AL,AH
+058C: 14 FA    BZ 0588</code></pre>
+
+  <h2>Flags</h2>
+  <table>
+    <tr><th>Flag</th><th>Meaning</th></tr>
+    <tr><td>C</td><td>Carry/link</td></tr>
+    <tr><td>I</td><td>Interrupt enable/state</td></tr>
+    <tr><td>N</td><td>Negative/sign</td></tr>
+    <tr><td>Z</td><td>Zero</td></tr>
+  </table>
+
+  <h2>Opcode map</h2>
+  <table>
+    <tr><th>Range</th><th>Group</th><th>Notes</th></tr>
+    <tr><td><code>00-0F</code></td><td>Low/control</td><td><code>HALT</code>, <code>NOP</code>, flag ops, <code>RSR</code>, <code>RI</code>, <code>RIM</code>, <code>RSV</code></td></tr>
+    <tr><td><code>10-1F</code></td><td>Branches</td><td>Signed 8-bit PC-relative displacement</td></tr>
+    <tr><td><code>20-2F</code></td><td>8-bit misc</td><td>inc/dec/clear/not/shift/rotate, <code>DMA</code></td></tr>
+    <tr><td><code>30-3F</code></td><td>16-bit misc</td><td>inc/dec/clear/not/shift/rotate</td></tr>
+    <tr><td><code>40-4F</code></td><td>8-bit ALU</td><td>add/sub/and/or/xor/xfr and memory ops</td></tr>
+    <tr><td><code>50-5F</code></td><td>16-bit ALU</td><td>add/sub/and/or/xor/xfr</td></tr>
+    <tr><td><code>60-6F</code></td><td>RT load/store</td><td>Load/store <code>RT</code> via addressing modes</td></tr>
+    <tr><td><code>70-7F</code></td><td>Jump/call/stack</td><td><code>JMP</code>, <code>CALL</code>, <code>PUSH</code>, <code>POP</code></td></tr>
+    <tr><td><code>80-FF</code></td><td>Load/store</td><td>Byte/word loads and stores; special <code>D7</code>, <code>E6</code>, <code>F6</code></td></tr>
+  </table>
+
+  <h2>Branches</h2>
+  <p>Branch opcodes use an 8-bit signed offset from the instruction following the offset byte.</p>
+  <table>
+    <tr><th>Low nibble</th><th>Mnemonic</th><th>Emulator condition</th></tr>
+    <tr><td>0</td><td>BC</td><td>C set</td></tr>
+    <tr><td>1</td><td>BNC</td><td>C clear</td></tr>
+    <tr><td>2</td><td>BN</td><td>N set</td></tr>
+    <tr><td>3</td><td>BP</td><td>N clear</td></tr>
+    <tr><td>4</td><td>BZ</td><td>Z set</td></tr>
+    <tr><td>5</td><td>BNZ</td><td>Z clear</td></tr>
+    <tr><td>6</td><td>BLT/BNL-ish</td><td>C clear in current emulator</td></tr>
+    <tr><td>7</td><td>BGE/BP-ish</td><td>N clear</td></tr>
+    <tr><td>8</td><td>BGT</td><td>N set</td></tr>
+    <tr><td>9</td><td>BLE</td><td>N or Z set</td></tr>
+  </table>
+
+  <h2>Addressing modes</h2>
+  <p>Load/store and jump groups use low opcode bits as addressing mode selectors. Implemented forms include:</p>
+  <table>
+    <tr><th>Mode</th><th>Meaning</th></tr>
+    <tr><td>0</td><td>Immediate operand at PC</td></tr>
+    <tr><td>1</td><td>Direct 16-bit address</td></tr>
+    <tr><td>2</td><td>Indirect through 16-bit direct address</td></tr>
+    <tr><td>3</td><td>PC-relative direct</td></tr>
+    <tr><td>4</td><td>PC-relative indirect</td></tr>
+    <tr><td>5</td><td>Indexed form</td></tr>
+    <tr><td>6-7</td><td>Register pair direct</td></tr>
+  </table>
+
+  <p>Indexed operands include register selection, optional auto-increment/decrement, optional displacement,
+  and optional indirection. Example from WIPL:</p>
+  <pre><code>05F4: 95 A4    LD AX,@[SP]    ; load AX through a pointer stored at SP</code></pre>
+
+  <h2>Calls, returns, and stack</h2>
+  <p><code>CALL</code> stores the current <code>RT</code> on the stack, sets <code>RT</code> to the return PC,
+  and jumps. <code>RSR</code> jumps to <code>RT</code> and restores the prior <code>RT</code> from the stack.</p>
+  <pre><code>05AF: 7F 81    POP EH..EL
+05B1: 09       RSR</code></pre>
+
+  <h2>Interrupts</h2>
+  <p><code>EI</code>/<code>DI</code> set and clear the emulator's interrupt-enable flag.
+  Queued terminal input raises a level-6 interrupt when enabled and when level 6 has a non-zero
+  <code>P/HX</code> vector. Interrupt entry saves the current level, PC, and flags internally,
+  switches to level 6, jumps to <code>IL6(P)</code>, and disables nested interrupts. <code>RI</code>
+  restores the saved frame. This is enough for WIPL's MUX routine at <code>05A6</code> to read
+  <code>F201</code> and leave the character in <code>IL6(A)</code>.</p>
+
+  <h2>Special instructions</h2>
+  <table>
+    <tr><th>Opcode</th><th>Mnemonic</th><th>Meaning</th></tr>
+    <tr><td><code>D7 xx</code></td><td>ILST</td><td>Store AX into interlevel register selected by byte</td></tr>
+    <tr><td><code>E6 xx</code></td><td>ILLD</td><td>Load AX from interlevel register selected by byte</td></tr>
+    <tr><td><code>F6 spec off</code></td><td>XIO</td><td>Device I/O using <code>EX + off</code></td></tr>
+    <tr><td><code>2F xx</code></td><td>DMA</td><td>DMA register/control operation</td></tr>
+  </table>
+
+  <h2>Terminal conventions observed in WIPL</h2>
+  <p>WIPL normalizes printable terminal input by setting the high bit. For example, pressing
+  ASCII <code>'1'</code> yields <code>AL=B1</code> while <code>AH</code> may retain <code>31</code>:</p>
+  <pre><code>058E: C0 80    LDB BL,#80
+0590: 43 31    ORB AL,BL      ; '1' =&gt; B1</code></pre>
+  <p>High-bit control characters seen in the line editor include <code>88</code> backspace-like,
+  <code>8D</code> carriage return, and <code>95</code> line-kill/cancel-like.</p>
+</body>
+</html>
