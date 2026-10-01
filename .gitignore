@@ -5,3 +5,6 @@ roms/
 !devlog/
 !devlog/**
 xxx
+out/
+os/
+disk/
