@@ -648,10 +648,25 @@ public sealed class Cpu6
     {
         hawkPath = path;
         hawkImage = File.Exists(path) ? File.ReadAllBytes(path) : new byte[HawkSectorSize * HawkSectorsPerTrack * HawkHeads * 203];
-        if (HawkImageOffset < 0) HawkImageOffset = (hawkImage.Length > 304 && (hawkImage.Length - 304) % HawkSectorSize == 0) ? 304 : 0;
+        if (HawkImageOffset < 0) HawkImageOffset = DetectHawkImageOffset(hawkImage);
         hawkStatus = 0;
         hawkDriveStatus = 0x3F;
         Console.WriteLine("mounted Hawk drive: {0} ({1} bytes, data offset {2}{3})", path, hawkImage.Length, HawkImageOffset, IsAllZero(hawkImage) ? ", blank" : "");
+    }
+    int DetectHawkImageOffset(byte[] image)
+    {
+        // Most known platter dumps have the HDIPL sector at byte 0 and a 304-byte
+        // trailer.  Some dump formats have a short textual/header prefix.  Prefer
+        // the recognizable WIPL/HDIPL entry bytes over the old modulo heuristic,
+        // which mistook CENTOS_*.IMG's trailer for a leading header.
+        int[] candidates = { 0, 12, 304 };
+        foreach (int offset in candidates)
+            if (LooksLikeHawkIpl(image, offset)) return offset;
+        return 0;
+    }
+    bool LooksLikeHawkIpl(byte[] image, int offset)
+    {
+        return image.Length >= offset + 8 && image[offset] == 0x01 && image[offset + 1] == 0x01 && image[offset + 2] == 0x01 && image[offset + 3] == 0x73;
     }
     public void BootFloppy()
     {
@@ -869,7 +884,9 @@ public sealed class Cpu6
     {
         byte spec = Fetch();
         sbyte off = unchecked((sbyte)Fetch());
-        ushort a = (ushort)(RegPair(EX) + off); // Z register is the device base in WIPL's XIO forms.
+        ushort z = RegPair(EX);
+        if (z == 0) z = (ushort)(0xF000 | RegPair(RT)); // Some HDIPL paths keep the Z/MMIO base as a low I/O page in RT.
+        ushort a = (ushort)(z + off); // Z register is the device base in WIPL's XIO forms.
         if (spec == 0x19) Write8(a, Reg(AL));
         else if (spec == 0x39) Write8(a, Reg(BL));
         else if (spec == 0x18) { Reg(AL, Read8(a)); Flag8(Reg(AL), false, 0); }
@@ -1081,8 +1098,8 @@ public sealed class Cpu6
     {
         int imageOffset = HawkImageOffsetForAddress();
         int count = DmaTransferCount();
-        if (count <= 0 || count > HawkSectorSize) count = HawkSectorSize;
-        if (imageOffset < 0 || imageOffset + count > hawkImage.Length) throw new InvalidOperationException($"Hawk address out of range: addr=${hawkSectorAddress:X4} offset={imageOffset}");
+        if (count <= 0) count = HawkSectorSize;
+        if (imageOffset < 0 || imageOffset + count > hawkImage.Length) throw new InvalidOperationException($"Hawk address out of range: addr=${hawkSectorAddress:X4} offset={imageOffset} count={count}");
         if (dmaAddr + count > 65536) throw new InvalidOperationException("Hawk DMA transfer crosses memory end");
         if (FloppyTrace)
         {
@@ -1166,8 +1183,8 @@ public sealed class Cpu6
     int DmaTransferCount()
     {
         // Centurion boot code programs DMA count as one's-complement-ish FFFF-n;
-        // the hardware transfers 0x10000-count bytes.
-        return dmaCount >= 0x8000 ? 0x10000 - dmaCount : dmaCount;
+        // the hardware transfers 0xFFFF-count bytes for these IPL paths.
+        return dmaCount >= 0x8000 ? 0xFFFF - dmaCount : dmaCount;
     }
 
     void FfcLoadCommandBuffer()
