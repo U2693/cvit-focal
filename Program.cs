@@ -1077,6 +1077,8 @@ public sealed class Cpu6
         int imageOffset;
         if (FfcLinear)
         {
+            // Experimental hard-disk/Hawk-style interpretation.  Normal FFC
+            // floppy commands use track/sector addressing in the else branch.
             logicalSector = ((track & 0xff) << 8) | (sector & 0xff);
             imageOffset = logicalSector * FloppySectorSize;
             int maxSectors = FloppyTracks * FloppyHeads * FloppySectorsPerTrack;
