@@ -38,6 +38,11 @@ public static class BiscvitProgram
                 else if (a == "--floppy-trace") cpu.FloppyTrace = true;
                 else if (a == "--ffc-linear") cpu.FfcLinear = true;
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
+                else if (a == "--hawk" && i + 1 < args.Length) cpu.MountHawk(args[++i]);
+                else if (a == "--hawk-sector-size" && i + 1 < args.Length) cpu.HawkSectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
+                else if (a == "--hawk-sectors-per-track" && i + 1 < args.Length) cpu.HawkSectorsPerTrack = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
+                else if (a == "--hawk-heads" && i + 1 < args.Length) cpu.HawkHeads = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
+                else if (a == "--hawk-image-offset" && i + 1 < args.Length) cpu.HawkImageOffset = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--floppy-sector-size" && i + 1 < args.Length) cpu.FloppySectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--floppy-sectors-per-track" && i + 1 < args.Length) cpu.FloppySectorsPerTrack = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--floppy-heads" && i + 1 < args.Length) cpu.FloppyHeads = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -55,7 +60,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear] [--floppy image] [--floppy-sector-size n] [--floppy-sectors-per-track n] [--floppy-heads n] [--floppy-tracks n] [--boot-floppy] [--run] [--max n]");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear] [--floppy image] [--hawk image] [--boot-floppy] [--run] [--max n]");
         Console.WriteLine("TUI keys: Alt-= or Esc = terminal focus, s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
     }
     static void QueueText(Cpu6 cpu, string text)
@@ -547,6 +552,8 @@ public sealed class Tui
             $"  geometry {cpu.FloppyTracks}T/{cpu.FloppyHeads}H/{cpu.FloppySectorsPerTrack}S",
             $"DMA            addr {cpu.DmaAddr:X4}  count {cpu.DmaCount:X4}  mode {cpu.DmaMode:X2}",
             $"FFC F800       cmd {cpu.FfcCommand:X2}  status {cpu.FfcStatus:X2}  result {cpu.FfcResult:X2}  buflen {cpu.FfcCommandLength}",
+            $"Hawk F140      {(cpu.HawkMounted ? "mounted" : "not mounted")} cmd {cpu.HawkCommand:X2} status {cpu.HawkStatus:X2}/{cpu.HawkDriveStatus:X2}",
+            $"  unit {cpu.HawkUnit:X2} addr {cpu.HawkSectorAddress:X4} cyl {cpu.HawkCylinder} head {cpu.HawkHead} sec {cpu.HawkSector}",
             $"Memory         64K RAM",
             $"Interrupts     IPL {cpu.Ipl:X1}  depth {cpu.InterruptDepth}  FLAGS {cpu.Flags}",
             $"Breakpoint     {(cpu.Breakpoint < 0 ? "----" : cpu.Breakpoint.ToString("X4"))}"
@@ -598,14 +605,20 @@ public sealed class Cpu6
     byte dmaMode;
     byte floppyCommand, floppyStatus = 1, floppyUnit, floppyTrack, floppySector, floppyHead;
     byte ffcCommand, ffcStatus = 1, ffcResult;
+    byte hawkUnit, hawkWriteMask, hawkCommand, hawkStatus, hawkDriveStatus = 0x3F;
+    ushort hawkSectorAddress;
     byte[] ffcCommandBuffer = new byte[0];
-    byte[] floppyImage;
+    byte[] floppyImage, hawkImage;
     bool muxInterruptEnabled;
-    string floppyPath;
+    string floppyPath, hawkPath;
     public int FloppyTracks { get; set; } = 77;
     public int FloppyHeads { get; set; } = 2;
     public int FloppySectorsPerTrack { get; set; } = 26;
     public int FloppySectorSize { get; set; } = 128;
+    public int HawkSectorSize { get; set; } = 400;
+    public int HawkSectorsPerTrack { get; set; } = 16;
+    public int HawkHeads { get; set; } = 5;
+    public int HawkImageOffset { get; set; } = -1;
     public ushort PC { get; set; }
     public bool Halted { get; private set; }
     public bool Trace { get; set; }
@@ -631,6 +644,15 @@ public sealed class Cpu6
         floppyStatus = 1;
         Console.WriteLine("mounted 8-inch floppy: {0} ({1} bytes{2})", path, floppyImage.Length, IsAllZero(floppyImage) ? ", blank" : "");
     }
+    public void MountHawk(string path)
+    {
+        hawkPath = path;
+        hawkImage = File.Exists(path) ? File.ReadAllBytes(path) : new byte[HawkSectorSize * HawkSectorsPerTrack * HawkHeads * 203];
+        if (HawkImageOffset < 0) HawkImageOffset = (hawkImage.Length > 304 && (hawkImage.Length - 304) % HawkSectorSize == 0) ? 304 : 0;
+        hawkStatus = 0;
+        hawkDriveStatus = 0x3F;
+        Console.WriteLine("mounted Hawk drive: {0} ({1} bytes, data offset {2}{3})", path, hawkImage.Length, HawkImageOffset, IsAllZero(hawkImage) ? ", blank" : "");
+    }
     public void BootFloppy()
     {
         EnsureFloppy();
@@ -649,6 +671,7 @@ public sealed class Cpu6
             if (terminalInput.Count != 0) return terminalInput.Dequeue();
             return 0;
         }
+        if (hawkImage != null && a >= 0xF140 && a <= 0xF148) return ReadHawkReg(a);
         if (a >= 0xF140 && a <= 0xF145) return ReadFloppyReg(a);
         if (a == 0xF800) return ffcResult;
         if (a == 0xF801) return ffcStatus;
@@ -673,6 +696,7 @@ public sealed class Cpu6
             }
             return;
         }
+        if (hawkImage != null && a >= 0xF140 && a <= 0xF148) { WriteHawkReg(a, b); return; }
         if (a >= 0xF140 && a <= 0xF145) { WriteFloppyReg(a, b); return; }
         if (a == 0xF800) { WriteFfcCommand(b); return; }
         mem[a] = b;
@@ -990,6 +1014,86 @@ public sealed class Cpu6
         }
     }
 
+    byte ReadHawkReg(ushort a)
+    {
+        switch (a - 0xF140)
+        {
+            case 0: return (byte)(0xF0 | (hawkUnit & 0x0F));
+            case 1: return (byte)(hawkSectorAddress >> 8);
+            case 2: return (byte)hawkSectorAddress;
+            case 3: return hawkWriteMask;
+            case 4: return hawkStatus;
+            case 5: return hawkDriveStatus;
+            case 8: return hawkCommand;
+            default: return 0;
+        }
+    }
+    void WriteHawkReg(ushort a, byte v)
+    {
+        switch (a - 0xF140)
+        {
+            case 0: hawkUnit = v; break;
+            case 1: hawkSectorAddress = (ushort)((hawkSectorAddress & 0x00FF) | (v << 8)); break;
+            case 2: hawkSectorAddress = (ushort)((hawkSectorAddress & 0xFF00) | v); break;
+            case 3: hawkWriteMask = v; break;
+            case 4: hawkStatus = v; break;
+            case 5: hawkDriveStatus = v; break;
+            case 8: hawkCommand = v; ExecuteHawkCommand(v); break;
+        }
+    }
+    void ExecuteHawkCommand(byte cmd)
+    {
+        EnsureHawk();
+        hawkStatus = 0;
+        hawkDriveStatus = 0x30;
+        try
+        {
+            switch (cmd)
+            {
+                case 0: HawkTransfer(read: true); break;
+                case 1: HawkTransfer(read: false); break;
+                case 2: break; // seek: address register already names the target sector
+                case 3: hawkSectorAddress = 0; break; // return to zero
+                case 4: break; // verify read
+                case 5:
+                case 6: break; // format steps: acknowledge only
+                default: throw new InvalidOperationException("bad Hawk command");
+            }
+            hawkStatus = 0;
+            hawkDriveStatus = 0x3F;
+        }
+        catch
+        {
+            hawkStatus = 0x80;
+            hawkDriveStatus = 0x10;
+            throw;
+        }
+    }
+    int HawkImageOffsetForAddress()
+    {
+        int cylinder = (hawkSectorAddress >> 5) & 0x7FF;
+        int head = (hawkSectorAddress >> 4) & 1;
+        int sector = hawkSectorAddress & 0x0F;
+        int logicalSector = ((cylinder * HawkHeads) + head) * HawkSectorsPerTrack + sector;
+        return HawkImageOffset + logicalSector * HawkSectorSize;
+    }
+    void HawkTransfer(bool read)
+    {
+        int imageOffset = HawkImageOffsetForAddress();
+        int count = DmaTransferCount();
+        if (count <= 0 || count > HawkSectorSize) count = HawkSectorSize;
+        if (imageOffset < 0 || imageOffset + count > hawkImage.Length) throw new InvalidOperationException($"Hawk address out of range: addr=${hawkSectorAddress:X4} offset={imageOffset}");
+        if (dmaAddr + count > 65536) throw new InvalidOperationException("Hawk DMA transfer crosses memory end");
+        if (FloppyTrace)
+        {
+            int cylinder = (hawkSectorAddress >> 5) & 0x7FF, head = (hawkSectorAddress >> 4) & 1, sector = hawkSectorAddress & 0x0F;
+            string first16 = read ? BitConverter.ToString(hawkImage, imageOffset, Math.Min(16, count)).Replace("-", " ") : "";
+            Console.Error.WriteLine($"Hawk {(read ? "READ" : "WRITE")} unit={hawkUnit & 0x0F} cyl={cylinder} head={head} sector={sector} addr=${hawkSectorAddress:X4} bytes={count} dma=${dmaAddr:X4} raw_offset={imageOffset} first16={first16}");
+        }
+        if (read) Buffer.BlockCopy(hawkImage, imageOffset, mem, dmaAddr, count);
+        else { Buffer.BlockCopy(mem, dmaAddr, hawkImage, imageOffset, count); SaveHawk(); }
+    }
+
     byte ReadFloppyReg(ushort a)
     {
         switch (a - 0xF140)
@@ -1147,10 +1251,19 @@ public sealed class Cpu6
     {
         if (floppyImage == null) throw new InvalidOperationException("no floppy mounted; use --floppy image or monitor command: floppy image");
     }
+    void EnsureHawk()
+    {
+        if (hawkImage == null) throw new InvalidOperationException("no Hawk drive mounted; use --hawk image");
+    }
     void SaveFloppy()
     {
         if (String.IsNullOrEmpty(floppyPath)) return;
         File.WriteAllBytes(floppyPath, floppyImage);
+    }
+    void SaveHawk()
+    {
+        if (String.IsNullOrEmpty(hawkPath)) return;
+        File.WriteAllBytes(hawkPath, hawkImage);
     }
     static bool IsAllZero(byte[] bytes)
     {
@@ -1205,6 +1318,7 @@ public sealed class Cpu6
     public ushort DmaCount { get { return dmaCount; } }
     public byte DmaMode { get { return dmaMode; } }
     public bool FloppyMounted { get { return floppyImage != null; } }
+    public bool HawkMounted { get { return hawkImage != null; } }
     public byte FfcCommand { get { return ffcCommand; } }
     public byte FfcStatus { get { return ffcStatus; } }
     public byte FfcResult { get { return ffcResult; } }
@@ -1215,5 +1329,13 @@ public sealed class Cpu6
     public byte FloppyTrack { get { return floppyTrack; } }
     public byte FloppySector { get { return floppySector; } }
     public byte FloppyHead { get { return floppyHead; } }
+    public byte HawkCommand { get { return hawkCommand; } }
+    public byte HawkStatus { get { return hawkStatus; } }
+    public byte HawkDriveStatus { get { return hawkDriveStatus; } }
+    public byte HawkUnit { get { return hawkUnit; } }
+    public ushort HawkSectorAddress { get { return hawkSectorAddress; } }
+    public int HawkCylinder { get { return (hawkSectorAddress >> 5) & 0x7FF; } }
+    public int HawkHead { get { return (hawkSectorAddress >> 4) & 1; } }
+    public int HawkSector { get { return hawkSectorAddress & 0x0F; } }
     public void QueueTerminalInput(byte b) { terminalInput.Enqueue(b); }
 }
