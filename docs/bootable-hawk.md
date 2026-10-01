@@ -41,9 +41,35 @@ CENTOS_12_HWKRCV.IMG          HDIPL @LOAD READY MONITOR
 Disassembler/Platters/HWKRPL2 HDIPL @LOAD READY MONITOR
 ```
 
+## Running one
+
+```sh
+./scripts/boot_hawk.sh
+HAWK="../CenturionComputer/Software/Data Packs/HWKRPL2.IMG" ./scripts/boot_hawk.sh
+```
+
+The script loads `roms/bootstrap_unscrambled.bin`, mounts the Hawk image, and sends `H0\r` by default.  Hawk images are handled by the `--hawk` path and the Hawk geometry flags (`--hawk-sector-size`, `--hawk-sector-stride`, `--hawk-sectors-per-track`, `--hawk-heads`, `--hawk-image-offset`), not by the experimental FFC linear floppy mode.
+
 Suggested starting order:
 
 1. `CENTOS_12.IMG`
 2. `HWKRPL2.IMG`
 3. `MINOS.IMG`
 4. `HAWK_DAVE.IMG`
+
+## Observed labels
+
+Labels read from the volume/directory label sector with high bits masked:
+
+| Image | Label | Notes |
+| --- | --- | --- |
+| `CENTOS_11.IMG` | `SOFTERM` | normal label at logical sector `$0010` |
+| `CENTOS_12.IMG` | `SOFTERM` | current default Hawk test image |
+| `CENTOS_13.IMG` | `SOFTERM` | same label family as CENTOS/HWKRPL2 |
+| `HWKRPL2.IMG` | `SOFTERM` | duplicate/related disassembler platter has same label |
+| `HWKRPL3.IMG` | `DATA6` | data/program platter variant |
+| `MINOS.IMG` | `MINOS` | MINOS-labeled platter |
+| `HWKFIX.IMG` | `PROGRAMS` | programs/fix platter |
+| `HAWK_DAVE.IMG` | `SOFTERM` | found at raw sector `13` after the 12-byte `HawkDump` header; logical `$0010` is blank in this dump layout |
+| `CENTOS_12_HWKRCV.IMG` | `SOFTERM` | related duplicate/variant under `Software/Disassembler/` |
+| `Disassembler/Platters/HWKRPL2.IMG` | `SOFTERM` | related duplicate/variant |

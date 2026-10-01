@@ -36,7 +36,7 @@ public static class BiscvitProgram
                 else if (a == "--type" && i + 1 < args.Length) QueueText(cpu, args[++i]);
                 else if (a == "--trace") cpu.Trace = true;
                 else if (a == "--floppy-trace") cpu.FloppyTrace = true;
-                else if (a == "--ffc-linear") cpu.FfcLinear = true;
+                else if (a == "--ffc-linear-experimental") cpu.FfcLinear = true;
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
                 else if (a == "--hawk" && i + 1 < args.Length) cpu.MountHawk(args[++i]);
                 else if (a == "--hawk-sector-size" && i + 1 < args.Length) cpu.HawkSectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -61,8 +61,10 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear] [--floppy image] [--hawk image] [--boot-floppy] [--run] [--max n]");
-        Console.WriteLine("TUI keys: Alt-= or Esc = terminal focus, s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image] [--boot-floppy] [--run] [--max n]");
+        Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
+        Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
+        Console.WriteLine("TUI keys: Ctrl-Tab, Alt-=, or Esc = terminal focus; s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
     }
     static void QueueText(Cpu6 cpu, string text)
     {

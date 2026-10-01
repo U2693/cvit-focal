@@ -6,9 +6,9 @@ ROM="${ROM:-$ROOT/roms/bootstrap_unscrambled.bin}"
 FLOPPY="${FLOPPY:-$ROOT/roms/floppy.img}"
 BOOT_KEYS="${BOOT_KEYS:-F0\\r}"
 FLOPPY_HEADS="${FLOPPY_HEADS:-1}"
-FFC_LINEAR_ARGS=()
-if [[ "${FFC_LINEAR:-0}" == "1" ]]; then
-  FFC_LINEAR_ARGS=(--ffc-linear)
+FFC_LINEAR_EXPERIMENTAL_ARGS=()
+if [[ "${FFC_LINEAR_EXPERIMENTAL:-0}" == "1" ]]; then
+  FFC_LINEAR_EXPERIMENTAL_ARGS=(--ffc-linear-experimental)
 fi
 
 exec dotnet run --project "$ROOT" -- \
@@ -18,6 +18,6 @@ exec dotnet run --project "$ROOT" -- \
   --floppy-sectors-per-track 20 \
   --floppy-heads "$FLOPPY_HEADS" \
   --floppy-tracks 77 \
-  "${FFC_LINEAR_ARGS[@]}" \
+  "${FFC_LINEAR_EXPERIMENTAL_ARGS[@]}" \
   --type "$BOOT_KEYS" \
   "$@"

@@ -25,8 +25,15 @@
   <p>The script loads <code>roms/bootstrap_unscrambled.bin</code>, mounts <code>roms/floppy.img</code>,
   and configures the floppy geometry used by the local image.</p>
 
+  <h2>Run the bootstrap + Hawk image</h2>
+  <pre><code>./scripts/boot_hawk.sh</code></pre>
+
+  <p>The Hawk script defaults to <code>../CenturionComputer/Software/Data Packs/CENTOS_12.IMG</code>.
+  Override it with <code>HAWK=/path/to/image ./scripts/boot_hawk.sh</code>.</p>
+
   <h2>Useful scripted boot keys</h2>
-  <pre><code>BOOT_KEYS=$'F0\r' ./scripts/boot.sh</code></pre>
+  <pre><code>BOOT_KEYS=$'F0\r' ./scripts/boot.sh
+BOOT_KEYS=$'H0\r' ./scripts/boot_hawk.sh</code></pre>
 
   <p>Terminal input is old-system style: the monitor/WIPL wants carriage return
   (<code>\r</code>), not line feed (<code>\n</code>).</p>
@@ -34,7 +41,7 @@
   <h2>TUI keys</h2>
   <table>
     <tr><th>Key</th><th>Action</th></tr>
-    <tr><td><code>Alt-=</code> or <code>Esc</code> then <code>=</code></td><td>Toggle terminal focus</td></tr>
+    <tr><td><code>Ctrl-Tab</code>, <code>Alt-=</code>, or <code>Esc</code> then <code>=</code></td><td>Toggle terminal focus</td></tr>
     <tr><td><code>s</code></td><td>Step one instruction</td></tr>
     <tr><td><code>r</code></td><td>Run/pause</td></tr>
     <tr><td><code>n</code></td><td>Step 100 instructions</td></tr>
@@ -59,7 +66,20 @@ dotnet run -- \
   --floppy-sector-size 400 \
   --floppy-sectors-per-track 20 \
   --floppy-heads 1 \
-  --floppy-tracks 77</code></pre>
+  --floppy-tracks 77
+
+dotnet run -- \
+  --boot-rom roms/bootstrap_unscrambled.bin \
+  --hawk "../CenturionComputer/Software/Data Packs/CENTOS_12.IMG" \
+  --hawk-sector-size 400 \
+  --hawk-sector-stride 512 \
+  --hawk-sectors-per-track 16 \
+  --hawk-heads 2</code></pre>
+
+  <p>Useful debug flags: <code>--trace</code> for CPU tracing and <code>--floppy-trace</code>
+  for FFC/floppy transfers. <code>--ffc-linear-experimental</code> is only for synthetic or
+  historical experiments where FFC track/sector bytes are treated as a 16-bit linear
+  block address; do not use it for normal FDIPL floppy booting.</p>
 
   <h2>Notes from WIPL debugging</h2>
   <ul>

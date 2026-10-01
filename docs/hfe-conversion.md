@@ -88,14 +88,14 @@ for term in [b'FDIPL', b'@LOAD', b'@SYS', b'@OSN', b'READY', b'MONITOR']:
 PY
 ```
 
-Smoke boot should use normal floppy track/sector FFC addressing, not `FFC_LINEAR=1`:
+Smoke boot should use normal floppy track/sector FFC addressing, not `FFC_LINEAR_EXPERIMENTAL=1`:
 
 ```sh
 scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_side0.img --side 0
 FLOPPY=/tmp/cops_side0.img FLOPPY_HEADS=1 ./scripts/boot.sh --run --max 150000 --floppy-trace
 ```
 
-Important: `FFC_LINEAR=1` treats the FFC track and sector bytes as a 16-bit linear block address. That is useful only as an experiment and is not the floppy protocol. FDIPL's read of Disk-6 sector `0x0020`, for example, appears on the FFC as track `1`, sector `12` (`0x20 / 20`, `0x20 % 20`), not as a Hawk-style linear address `0x0020`.
+Important: `FFC_LINEAR_EXPERIMENTAL=1` / `--ffc-linear-experimental` treats the FFC track and sector bytes as a 16-bit linear block address. That is useful only as an experiment and is not the floppy protocol. FDIPL's read of Disk-6 sector `0x0020`, for example, appears on the FFC as track `1`, sector `12` (`0x20 / 20`, `0x20 % 20`), not as a Hawk-style linear address `0x0020`.
 
 Current observed output no longer reports `AB 47`:
 
