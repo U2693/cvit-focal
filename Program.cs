@@ -619,7 +619,7 @@ public sealed class Cpu6
     public int HawkSectorSize { get; set; } = 400;
     public int HawkSectorStride { get; set; } = 512;
     public int HawkSectorsPerTrack { get; set; } = 16;
-    public int HawkHeads { get; set; } = 5;
+    public int HawkHeads { get; set; } = 2;
     public int HawkImageOffset { get; set; } = -1;
     public ushort PC { get; set; }
     public bool Halted { get; private set; }
@@ -901,7 +901,7 @@ public sealed class Cpu6
         if (op == 0x76) { ipl = 15; return; }
         if (op == 0x7E) { PushBytes(); return; }
         if (op == 0x7F) { PopBytes(); return; }
-        ushort n; switch (op & 7) { case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); n = Read16((ushort)(PC + off)); break; } case 5: n = Indexed(2); break; default: Unknown(); return; }
+        ushort n; switch (op & 7) { case 0: n = RegPair(AX); break; case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); n = Read16((ushort)(PC + off)); break; } case 5: n = Indexed(2); break; default: Unknown(); return; }
         if ((op & 8) != 0) { Push(RegPair(RT)); SetRegPair(RT, PC); } PC = n;
     }
     void PushBytes()
@@ -923,12 +923,12 @@ public sealed class Cpu6
     }
     void Misc8()
     {
-        int r = AL, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op >= 0x24 && op <= 0x27) { r = enc >> 4; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 4; }
-        switch (op) { case 0x20: Inc8(r); break; case 0x21: Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) Shr8(r); break; case 0x25: while (count-- > 0) Shl8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: byte e = Fetch(); SetRegPair((e & 15) >> 1, (ushort)(e >> 5)); break; case 0x2F: Dma(); break; default: Unknown(); break; }
+        int r = AL, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x20 || op == 0x21 || (op >= 0x24 && op <= 0x27)) { r = enc >> 4; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 4; }
+        switch (op) { case 0x20: while (count-- > 0) Inc8(r); break; case 0x21: while (count-- > 0) Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) Shr8(r); break; case 0x25: while (count-- > 0) Shl8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: byte e = Fetch(); SetRegPair((e & 15) >> 1, (ushort)(e >> 5)); break; case 0x2F: Dma(); break; default: Unknown(); break; }
     }
     void Misc16()
     {
-        int r = AX, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x30 || op == 0x31 || (op >= 0x34 && op <= 0x37)) { r = (enc >> 4) >> 1; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 5; }
+        int r = AX, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x33) r = (enc >> 4) >> 1; else if (op == 0x30 || op == 0x31 || (op >= 0x34 && op <= 0x37)) { r = (enc >> 4) >> 1; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 5; }
         switch (op) { case 0x30: while (count-- > 0) Inc16(r); break; case 0x31: while (count-- > 0) Dec16(r); break; case 0x32: SetRegPair(r, 0); Flag16(0, false, 0); break; case 0x33: SetRegPair(r, (ushort)~RegPair(r)); Flag16(RegPair(r), false, 0); break; case 0x34: while (count-- > 0) Shr16(r); break; case 0x35: while (count-- > 0) Shl16(r); break; case 0x36: while (count-- > 0) Rrc16(r); break; case 0x37: while (count-- > 0) Rlc16(r); break; case 0x38: Inc16(AX); break; case 0x39: Dec16(AX); break; case 0x3A: SetRegPair(AX, 0); Flag16(0, false, 0); break; case 0x3B: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break; case 0x3C: Shr16(AX); break; case 0x3D: Shl16(AX); break; case 0x3E: Inc16(RT); break; case 0x3F: Dec16(RT); break; }
     }
     void Alu8()
