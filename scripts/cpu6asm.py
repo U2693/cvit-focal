@@ -10,7 +10,7 @@ class Asm:
         self.org = org
         self.buf = bytearray()
         self.labels = {}
-        self.fix = []  # (offset, label)
+        self.fix = []  # (kind, offset, label)
 
     @property
     def pc(self):
@@ -27,7 +27,12 @@ class Asm:
 
     def _rel(self, op, label):
         self.buf += bytes([op, 0])
-        self.fix.append((len(self.buf) - 1, label))
+        self.fix.append(("rel8", len(self.buf) - 1, label))
+        return self
+
+    def _abs16(self, op, label):
+        self.buf += bytes([op, 0, 0])
+        self.fix.append(("abs16", len(self.buf) - 2, label))
         return self
 
     def u16(self, v):
@@ -69,6 +74,8 @@ class Asm:
     # branches
     def jmp(self, l): return self._rel(0x73, l)
     def jsr(self, l): return self._rel(0x7B, l)
+    def jmp_abs(self, l): return self._abs16(0x71, l)
+    def jsr_abs(self, l): return self._abs16(0x79, l)
     def bz(self, l): return self._rel(0x14, l)
     def bnz(self, l): return self._rel(0x15, l)
     def bl(self, l): return self._rel(0x10, l)
@@ -80,8 +87,15 @@ class Asm:
 
     def bytes(self):
         out = bytearray(self.buf)
-        for off, label in self.fix:
-            rel = self.labels[label] - (self.org + off + 1)
-            assert -128 <= rel <= 127, (label, rel)
-            out[off] = rel & 255
+        for kind, off, label in self.fix:
+            if kind == "rel8":
+                rel = self.labels[label] - (self.org + off + 1)
+                assert -128 <= rel <= 127, (label, rel)
+                out[off] = rel & 255
+            elif kind == "abs16":
+                v = self.labels[label]
+                out[off] = (v >> 8) & 255
+                out[off + 1] = v & 255
+            else:
+                raise AssertionError(kind)
         return bytes(out)
