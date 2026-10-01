@@ -1096,7 +1096,9 @@ public sealed class Cpu6
         {
             int peek = Math.Min(16, Math.Max(0, Math.Min(bytes, floppyImage.Length - imageOffset)));
             string first16 = read && peek > 0 ? BitConverter.ToString(floppyImage, imageOffset, peek).Replace("-", " ") : "";
-            string addr = FfcLinear ? $"addr=${logicalSector:X4} hi={track:D2} lo={sector:D2}" : $"track={track:D2} head={head} sector={sector:D2}";
+            string addr = FfcLinear
+                ? $"addr=${logicalSector:X4} hi={track:D2} lo={sector:D2}"
+                : $"track={track:D2} head={head} sector={sector:D2} disk6=${(track * FloppySectorsPerTrack + sector):X4}";
             Console.Error.WriteLine($"FFC {(read ? "READ" : "WRITE")} unit={unit} {addr} bytes={bytes} dma=${dmaAddr:X4} raw_offset={imageOffset} first16={first16}");
         }
         if (read) Buffer.BlockCopy(floppyImage, imageOffset, mem, dmaAddr, bytes);
