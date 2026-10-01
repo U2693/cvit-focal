@@ -73,8 +73,8 @@ type       byte    ; SYS/BIN/TXT/BAS/DIR equivalent
 
 ## Milestones
 
-1. Boot banner, stable jump table, ProDOS-style prompt.
+1. Boot banner, stable jump table, ProDOS-style prompt. **Done.**
 2. Console `putc`/`puts`/`getc` routines.
-3. Hawk `read_block`/`write_block` wrappers over native 400-byte sectors.
-4. Read `SYSTEM` library and list `KERNEL`, `COMMAND`, `BASIC` with `CAT`.
+3. Hawk `read_block`/`write_block` wrappers over native 400-byte sectors. **Started:** `CAT` reads sector `0x20` directly.
+4. Read `SYSTEM` library and list members with `CAT`. **Started:** current stub reads page 0 and prints rows until the `84 8D` terminator.
 5. Load and run `SYSTEM/COMMAND`.
