@@ -371,6 +371,12 @@ public sealed class Tui
             }
             else args = $"AX,{ImplicitWordDest(op)}";
         }
+        else if (op == 0x67 && b1 == 0x4A && b2 == 0x86)
+        {
+            bytes += $" {b1:X2} {b2:X2}";
+            inst = "MEMCPY";
+            args = "AL+1,[EX],[DX]";
+        }
         else if (op < 0x70)
         {
             var a = AddrArg(pc, 2, op & 7, out int len);
@@ -710,7 +716,7 @@ public sealed class Cpu6
         ServiceInterrupts();
         ushort oldpc = PC; op = Fetch();
         if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX));
-        if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
+        if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op == 0x67) MemOp(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
     }
 
     void ServiceInterrupts()
@@ -936,6 +942,24 @@ public sealed class Cpu6
     void MemOp()
     {
         byte ib = Fetch();
+        if (op == 0x67)
+        {
+            byte spec = Fetch();
+            if (ib == 0x4A && spec == 0x86)
+            {
+                // Variable-length memcpy used by WIPL/FDIPL's object loader:
+                //   67 4A 86  memcpy AL+1, [EX/Z], [DX/Y]
+                // The loader preloads AL with length-1 and expects X/Y/Z to be
+                // preserved so it can advance pointers itself afterwards.
+                int vlen = Reg(AL) + 1;
+                ushort src = RegPair(EX), dst = RegPair(DX);
+                for (int i = 0; i < vlen; i++) Write8((ushort)(dst + i), Read8((ushort)(src + i)));
+                return;
+            }
+            Unknown();
+            return;
+        }
+
         int selector = ib >> 4;
         int len = Fetch() + 1;
         if (selector == 4 || selector == 9)

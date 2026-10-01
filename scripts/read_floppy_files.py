@@ -222,7 +222,10 @@ class Disk6:
             for sec in range(start, start + ent.fsi):
                 if remaining <= 0:
                     break
-                out.extend(self.read_sector(sec + self.ual_sector))
+                # UAL file-sector entries are absolute Disk-6 sector numbers.
+                # FDIPL's @LOAD walk reads entries such as $02C4 directly, not
+                # relative to the UAL base sector ($0020).
+                out.extend(self.read_sector(sec))
                 remaining -= 1
             if remaining <= 0:
                 break

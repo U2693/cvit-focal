@@ -23,8 +23,9 @@ For this image, useful bytes can be recovered with this experimental decode:
    - side 1 chunk: bytes `256..511` of each 512-byte block
 3. Decode the side stream as MFM-like cells:
    - bits are read little-bit-order from each encoded byte
-   - data phase observed for this image: `6`
    - data bits are the odd cells: `phase + j * 2 + 1`
+   - CentOpSys track 0 side 0 decodes with phase `6`
+   - normal data sectors can land on either phase `6` or phase `14`; the converter scores both per sector and chooses the less nibble-shifted-looking payload
 4. The Centurion sector payload begins at decoded byte offset `75` within each decoded side/track stream.
 5. Extract `20 * 400` bytes per track side.
 
@@ -42,7 +43,7 @@ The HFE-to-Disk-6 converter now lives at `scripts/hfe_to_disk6.py`:
 scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
 ```
 
-It decodes each side stream as above, extracts individual 400-byte sector payloads, and applies the current CentOpSys Disk-6 boot/volume/catalog reconstruction.  On normally formatted tracks the sector payload starts immediately after an 8-byte per-sector header following the observed `FF` gap.  The resulting side-0 image size is:
+It decodes each side stream as above, extracts individual 400-byte sector payloads, and applies the current CentOpSys Disk-6 boot/volume/catalog reconstruction.  On normally formatted tracks the converter now uses the fixed nominal sector starts.  Earlier FF-gap scanning was useful for discovery but is unsafe for extraction because real payloads can contain long `FF` runs that look like sector gaps.  The resulting side-0 image size is:
 
 ```text
 77 tracks * 20 sectors/track * 400 bytes/sector = 616000 bytes
@@ -127,11 +128,16 @@ A bad code such as `00` produces:
 AB 48 - INCORRECT DISK CODE
 ```
 
-After accepted `CODE=100`, FDIPL performs additional reads. With floppy CHS addressing, the next notable access is the Disk-6 UAL base `0x0020` as FFC track `1`, sector `12`; that sector content is still not reconstructed correctly from the HFE. The remaining problem is therefore image-layout/sector-order fidelity, not a Hawk-style linear-address problem.
+After accepted `CODE=100`, FDIPL performs additional reads. With floppy CHS addressing, the next notable access is the Disk-6 UAL base `0x0020` as FFC track `1`, sector `12`.  This now decodes as a plausible UAL sector when the normal-track per-sector phase heuristic chooses phase `14` for that sector:
+
+```text
+FFC READ track=01 sector=12 disk6=$0020 ... first16=00 0F 80 00 04 00 00 00 00 FF FF FF ...
+```
+
+FDIPL then follows the `@LOAD` UAL and reads sectors `$02C4`, `$02C5`, `$02C6`, etc.  Its object loader uses CPU6 `67 4A 86` (`memcpy AL+1,[Z],[Y]`) to copy data records before advancing its own pointers; biscvit now implements that form.  Current traces progress through many more `@LOAD` sectors (at least into `$02E8`), but the loaded code still does not reach a visible prompt/output.
 
 Next likely work:
 
-- trace the post-`CODE=100` sector sequence and identify the final failing lookup/read,
-- compare FDIPL's directory walk with Meisaka's `DiskVol` interpretation,
-- validate the synthesized volume record against real Centurion media conventions,
+- trace execution after the `@LOAD` sector reads and identify where the loaded program stalls/halts,
+- compare FDIPL's directory/UAL walk with Meisaka's `DiskVol` interpretation,
 - keep floppy FFC addressing as CHS; reserve linear addressing for a separate hard-disk/Hawk path if needed.
