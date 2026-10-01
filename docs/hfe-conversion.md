@@ -36,13 +36,13 @@ The current `roms/cops.img` was produced from **side 0 only** so it can be mount
 
 ## Conversion script
 
-The extractor now lives at `scripts/extract_hfe_sectors.py`:
+The HFE-to-Disk-6 converter now lives at `scripts/hfe_to_disk6.py`:
 
 ```sh
-scripts/extract_hfe_sectors.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
+scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
 ```
 
-It decodes each side stream as above, then extracts individual 400-byte sector payloads.  On normally formatted tracks the sector payload starts immediately after an 8-byte per-sector header following the observed `FF` gap.  The resulting side-0 image size is:
+It decodes each side stream as above, extracts individual 400-byte sector payloads, and applies the current CentOpSys Disk-6 boot/volume/catalog reconstruction.  On normally formatted tracks the sector payload starts immediately after an 8-byte per-sector header following the observed `FF` gap.  The resulting side-0 image size is:
 
 ```text
 77 tracks * 20 sectors/track * 400 bytes/sector = 616000 bytes
@@ -51,7 +51,7 @@ It decodes each side stream as above, then extracts individual 400-byte sector p
 For a two-head track/head/sector ordered image:
 
 ```sh
-scripts/extract_hfe_sectors.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
+scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
 ```
 
 Track 0 side 0 of `CentOpSys.hfe` is a special bootstrap/volume track that does not show the normal per-sector `FF` gap pattern.  Current handling is explicit:
@@ -90,7 +90,7 @@ PY
 Smoke boot for the full two-sided image should use the FFC logical-sector mapping:
 
 ```sh
-scripts/extract_hfe_sectors.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
+scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
 FLOPPY=/tmp/cops_2h.img FLOPPY_HEADS=2 FFC_LINEAR=1 ./scripts/boot.sh --run --max 150000 --floppy-trace
 ```
 

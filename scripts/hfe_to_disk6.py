@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Extract Centurion 400-byte sectors from an HxC .hfe image.
+"""Reconstruct a Centurion Disk-6-style flat image from an HxC .hfe image.
 
 This is intentionally tuned for the Centurion HFE dumps in ../CenturionComputer.
 It decodes each HFE track side to bytes, finds sector payloads after the observed
-8-byte per-sector header, and writes a flat sector image suitable for biscvit.
+8-byte per-sector header, and applies CentOpSys boot/volume/catalog fixups needed
+for a logical Disk-6 image suitable for biscvit.
 
 Examples:
-  scripts/extract_hfe_sectors.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
-  scripts/extract_hfe_sectors.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
+  scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
+  scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
 """
 
 from __future__ import annotations
@@ -108,7 +109,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('src', type=Path)
     ap.add_argument('dst', type=Path)
-    ap.add_argument('--side', type=int, default=0, help='extract only this side (default: 0)')
+    ap.add_argument('--side', type=int, default=0, help='convert only this side (default: 0)')
     ap.add_argument('--all-sides', action='store_true', help='write track/head/sector order for all HFE sides')
     ap.add_argument('--phase', type=int, default=6)
     ap.add_argument('-v', '--verbose', action='store_true')
