@@ -933,6 +933,7 @@ public sealed class Cpu6
     }
     void Alu8()
     {
+        if (op == 0x46) { BigNum(); return; }
         if (op == 0x47) { MemOp(); return; }
         int s = AL, d = BL;
         if ((op & 8) == 0) { byte e = Fetch(); s = e >> 4; d = e & 15; }
@@ -982,6 +983,80 @@ public sealed class Cpu6
             default: Unknown(); break;
         }
     }
+    ushort ExtendedOperandAddress(int mode)
+    {
+        switch (mode & 3)
+        {
+            case 0: return Fetch16();
+            case 1:
+            {
+                byte regs = Fetch();
+                int r1 = (regs >> 4) >> 1, r2 = (regs & 15) >> 1;
+                int disp = (regs & 0x10) != 0 ? Fetch16() : unchecked((sbyte)Fetch());
+                return (ushort)(disp + RegPair(r1) + (r2 == AX ? 0 : RegPair(r2)));
+            }
+            case 2: return RegPair((Fetch() & 15) >> 1);
+            case 3: return PC;
+            default: return 0;
+        }
+    }
+
+    int ReadBigInt(ushort a, int bytes)
+    {
+        if (bytes <= 0) bytes = 2;
+        int v = 0;
+        for (int i = 0; i < bytes; i++) v = (v << 8) | Read8((ushort)(a + i));
+        int signBit = 1 << Math.Min(30, bytes * 8 - 1);
+        if (bytes < 4 && (v & signBit) != 0) v -= 1 << (bytes * 8);
+        return v;
+    }
+
+    void BigNum()
+    {
+        byte spec = Fetch();
+        int selector = spec >> 4, m = (spec >> 2) & 3, n = spec & 3;
+        ushort op1 = ExtendedOperandAddress(m), op2 = ExtendedOperandAddress(n);
+        if (selector == 8) // CTB/IBASECONV: base string to big number.
+        {
+            int b = (Read8(op1) & 0x7F) + 2;
+            if (b < 2 || b > 36) b = 10;
+            int value = 0;
+            ushort p = (ushort)(op1 + 1);
+            while (p != 0)
+            {
+                int ch = Read8(p) & 0x7F;
+                int digit = ch >= '0' && ch <= '9' ? ch - '0' : ch >= 'A' && ch <= 'Z' ? ch - 'A' + 10 : -1;
+                if (digit < 0 || digit >= b) break;
+                value = value * b + digit;
+                p++;
+            }
+            Write16(op2, value);
+            Write16((ushort)(op2 + 2), 0);
+            SetRegPair(AX, p);
+            Flag16(value, false, 0);
+            return;
+        }
+        if (selector == 9) // CFB/OBASECONV: big number to formatted base string.
+        {
+            int len = Reg(AL);
+            if (len <= 0) len = 1;
+            int b = (Read8(op1) & 0x7F) + 2;
+            if (b < 2 || b > 36) b = 10;
+            int value = ReadBigInt(op2, Math.Min(4, Math.Max(1, len)));
+            string digits = Convert.ToString(Math.Abs(value), b).ToUpperInvariant();
+            if (value < 0) digits = "-" + digits;
+            byte pad = Reg(BL);
+            if (pad == 0 || pad == 0xFF) pad = 0xA0;
+            for (int i = 0; i < len; i++) Write8((ushort)(op1 + i), pad);
+            int start = Math.Max(0, len - digits.Length);
+            for (int i = 0; i < digits.Length && start + i < len; i++) Write8((ushort)(op1 + start + i), digits[i] | 0x80);
+            SetRegPair(AX, (ushort)(op1 + len));
+            Flag16(value, false, 0);
+            return;
+        }
+        throw new InvalidOperationException($"unsupported bignum selector {selector:X} modes={m},{n} at ${(ushort)(PC - 1):X4}");
+    }
+
     void MemOp()
     {
         byte ib = Fetch();
@@ -1310,7 +1385,7 @@ public sealed class Cpu6
     void And16(int d, int s) { int v = RegPair(d) & RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); } void Or16(int d, int s) { int v = RegPair(d) | RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); } void Xor16(int d, int s) { int v = RegPair(d) ^ RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); }
     void Shl16(int r) { int v = RegPair(r); SetRegPair(r, (ushort)(v << 1)); Flag16(v << 1, true, v & 0x8000); } void Shr16(int r) { int v = RegPair(r); SetRegPair(r, (ushort)(v >> 1)); Flag16(v >> 1, true, v & 1); } void Rlc16(int r) { int v = RegPair(r); int c = v & 0x8000; v = ((v << 1) | ((flags & C) != 0 ? 1 : 0)) & 0xFFFF; SetRegPair(r, (ushort)v); Flag16(v, true, c); } void Rrc16(int r) { int v = RegPair(r); int c = v & 1; v = (v >> 1) | ((flags & C) != 0 ? 0x8000 : 0); SetRegPair(r, (ushort)v); Flag16(v, true, c); }
 
-    void Unknown() { throw new InvalidOperationException(String.Format("unknown/unsupported opcode {0:X2} near {1:X4}", op, (ushort)(PC - 1))); }
+    void Unknown() { throw new InvalidOperationException(String.Format("unknown/unsupported opcode {0:X2} near {1:X4} next={2:X2} {3:X2} {4:X2} {5:X2} {6:X2} {7:X2}", op, (ushort)(PC - 1), Peek(PC), Peek((ushort)(PC + 1)), Peek((ushort)(PC + 2)), Peek((ushort)(PC + 3)), Peek((ushort)(PC + 4)), Peek((ushort)(PC + 5)))); }
     string FlagString() { char[] s = new char[] { '-', '-', '-', '-' }; if ((flags & C) != 0) s[0] = 'C'; if ((flags & I) != 0) s[1] = 'I'; if ((flags & N) != 0) s[2] = 'N'; if ((flags & Z) != 0) s[3] = 'Z'; return new string(s); }
     public void PrintRegs() { Console.WriteLine("PC={0:X4} FLAGS={1} IPL={2:X1} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", PC, FlagString(), ipl, RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX)); }
     public void Dump(ushort a, int len) { for (int i = 0; i < len; i += 16) { Console.Write("{0:X4}: ", (ushort)(a + i)); for (int j = 0; j < 16 && i + j < len; j++) Console.Write("{0:X2} ", Read8((ushort)(a + i + j))); Console.WriteLine(); } }
