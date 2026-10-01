@@ -35,6 +35,8 @@ public static class BiscvitProgram
                 else if (a == "--boot-rom" && i + 1 < args.Length) { cpu.Load(File.ReadAllBytes(args[++i]), 0xFC00); cpu.PC = 0xFC00; }
                 else if (a == "--type" && i + 1 < args.Length) QueueText(cpu, args[++i]);
                 else if (a == "--trace") cpu.Trace = true;
+                else if (a == "--floppy-trace") cpu.FloppyTrace = true;
+                else if (a == "--ffc-linear") cpu.FfcLinear = true;
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
                 else if (a == "--floppy-sector-size" && i + 1 < args.Length) cpu.FloppySectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--floppy-sectors-per-track" && i + 1 < args.Length) cpu.FloppySectorsPerTrack = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -53,7 +55,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy image] [--floppy-sector-size n] [--floppy-sectors-per-track n] [--floppy-heads n] [--floppy-tracks n] [--boot-floppy] [--run] [--max n]");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear] [--floppy image] [--floppy-sector-size n] [--floppy-sectors-per-track n] [--floppy-heads n] [--floppy-tracks n] [--boot-floppy] [--run] [--max n]");
         Console.WriteLine("TUI keys: Alt-= or Esc = terminal focus, s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
     }
     static void QueueText(Cpu6 cpu, string text)
@@ -601,6 +603,8 @@ public sealed class Cpu6
     public ushort PC { get; set; }
     public bool Halted { get; private set; }
     public bool Trace { get; set; }
+    public bool FloppyTrace { get; set; }
+    public bool FfcLinear { get; set; }
     public int Breakpoint = -1;
     public event Action<char> TerminalOutput;
 
@@ -1045,12 +1049,13 @@ public sealed class Cpu6
         if (dmaAddr + count > 65536) throw new InvalidOperationException("FFC command DMA crosses memory end");
         ffcCommandBuffer = new byte[count];
         Buffer.BlockCopy(mem, dmaAddr, ffcCommandBuffer, 0, count);
+        if (FloppyTrace) Console.Error.WriteLine($"FFC CMDBUF dma=${dmaAddr:X4} count={count} bytes={BitConverter.ToString(ffcCommandBuffer).Replace("-", " ")}");
     }
 
     void FfcExecuteCommandBuffer()
     {
         EnsureFloppy();
-        int unit = 0, track = 0, sector = 0, bytes = DmaTransferCount();
+        int unit = 0, track = 0, head = 0, sector = 0, bytes = DmaTransferCount();
         bool read = false, write = false;
         for (int i = 0; i < ffcCommandBuffer.Length; )
         {
@@ -1060,6 +1065,7 @@ public sealed class Cpu6
             {
                 case 0x81: if (i < ffcCommandBuffer.Length) unit = ffcCommandBuffer[i++]; break;
                 case 0x83: if (i < ffcCommandBuffer.Length) track = ffcCommandBuffer[i++]; break;
+                case 0x85: if (i < ffcCommandBuffer.Length) head = ffcCommandBuffer[i++]; break;
                 case 0x88: read = true; if (i < ffcCommandBuffer.Length) sector = ffcCommandBuffer[i++]; if (i < ffcCommandBuffer.Length) i++; if (i + 1 < ffcCommandBuffer.Length) { bytes = (ffcCommandBuffer[i++] << 8) | ffcCommandBuffer[i++]; } break;
                 case 0x89: write = true; if (i < ffcCommandBuffer.Length) sector = ffcCommandBuffer[i++]; if (i < ffcCommandBuffer.Length) i++; if (i + 1 < ffcCommandBuffer.Length) { bytes = (ffcCommandBuffer[i++] << 8) | ffcCommandBuffer[i++]; } break;
                 default: break;
@@ -1067,13 +1073,33 @@ public sealed class Cpu6
         }
         if (!read && !write) { ffcResult = 0x40; return; }
         if (bytes <= 0) bytes = DmaTransferCount();
-        int imageOffset = ((track * FloppySectorsPerTrack) + sector) * FloppySectorSize;
-        if (track < 0 || track >= FloppyTracks || sector < 0 || sector >= FloppySectorsPerTrack) throw new InvalidOperationException("FFC floppy address out of range");
+        int logicalSector;
+        int imageOffset;
+        if (FfcLinear)
+        {
+            logicalSector = ((track & 0xff) << 8) | (sector & 0xff);
+            imageOffset = logicalSector * FloppySectorSize;
+            int maxSectors = FloppyTracks * FloppyHeads * FloppySectorsPerTrack;
+            if (head < 0 || head >= FloppyHeads || logicalSector < 0 || logicalSector >= maxSectors) throw new InvalidOperationException($"FFC floppy address out of range: unit={unit} addr=${logicalSector:X4} hi={track} head={head} lo={sector} geometry={FloppyTracks}T/{FloppyHeads}H/{FloppySectorsPerTrack}S");
+        }
+        else
+        {
+            logicalSector = sector;
+            imageOffset = (((track * FloppyHeads) + head) * FloppySectorsPerTrack + logicalSector) * FloppySectorSize;
+            if (track < 0 || track >= FloppyTracks || head < 0 || head >= FloppyHeads || logicalSector < 0 || logicalSector >= FloppySectorsPerTrack) throw new InvalidOperationException($"FFC floppy address out of range: unit={unit} track={track} head={head} sector={sector} geometry={FloppyTracks}T/{FloppyHeads}H/{FloppySectorsPerTrack}S");
+        }
         if (imageOffset + bytes > floppyImage.Length) bytes = Math.Max(0, floppyImage.Length - imageOffset);
         if (dmaAddr + bytes > 65536) throw new InvalidOperationException("FFC data DMA crosses memory end");
+        if (FloppyTrace)
+        {
+            int peek = Math.Min(16, Math.Max(0, Math.Min(bytes, floppyImage.Length - imageOffset)));
+            string first16 = read && peek > 0 ? BitConverter.ToString(floppyImage, imageOffset, peek).Replace("-", " ") : "";
+            string addr = FfcLinear ? $"addr=${logicalSector:X4} hi={track:D2} lo={sector:D2}" : $"track={track:D2} head={head} sector={sector:D2}";
+            Console.Error.WriteLine($"FFC {(read ? "READ" : "WRITE")} unit={unit} {addr} bytes={bytes} dma=${dmaAddr:X4} raw_offset={imageOffset} first16={first16}");
+        }
         if (read) Buffer.BlockCopy(floppyImage, imageOffset, mem, dmaAddr, bytes);
         else { Buffer.BlockCopy(mem, dmaAddr, floppyImage, imageOffset, bytes); SaveFloppy(); }
-        floppyUnit = (byte)unit; floppyTrack = (byte)track; floppySector = (byte)sector; floppyHead = 0; floppyStatus = 1;
+        floppyUnit = (byte)unit; floppyTrack = (byte)track; floppySector = (byte)sector; floppyHead = (byte)head; floppyStatus = 1;
         ffcResult = 0;
     }
 

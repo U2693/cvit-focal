@@ -23,6 +23,10 @@ PAYLOAD_OFFSET = 75
 # ~109 bytes of header/gap. Starts alternate by 509/510 decoded bytes.
 NOMINAL_STARTS = [75, 584, 1094, 1603, 2112, 2622, 3131, 3641, 4150, 4659,
                   5169, 5678, 6187, 6697, 7206, 7716, 8225, 8734, 9244, 9753]
+# Disk-6 volume record used by FDIPL.  The key/offset fields decode to
+# directory sector 0x0010, matching the catalog found on CentOpSys T0/S0.
+DISK6_VOLUME_RECORD = bytes.fromhex('78 c5 00 00 ef 2c e4 54 ff ff')
+CENTOPS_T0_CATALOG_OFFSET = 5312
 
 
 def decode_track_side(hfe: bytes, track_table: int, track: int, side: int, phase: int) -> bytes:
@@ -73,11 +77,20 @@ def extract_track(decoded: bytes, track: int, side: int, verbose: bool) -> bytes
     mode = 'gaps'
 
     if len(starts) != SECTORS_PER_TRACK:
-        # Track 0 side 0 of CentOpSys is a bootstrap track without normal FF
-        # gaps.  Its useful boot payload is contiguous at offset 75.
+        # Track 0 side 0 of CentOpSys is a bootstrap/volume track without the
+        # normal per-sector FF/header cadence.  Sectors 0..9 hold the IPL area,
+        # logical sector 14 is the Disk-6 volume record, and logical sector 16
+        # is the catalog found later in the decoded stream.
         if track == 0 and side == 0:
-            starts = [PAYLOAD_OFFSET + i * SECTOR_SIZE for i in range(SECTORS_PER_TRACK)]
-            mode = 'contiguous-t0s0'
+            out = bytearray(SECTORS_PER_TRACK * SECTOR_SIZE)
+            for i in range(10):
+                start = PAYLOAD_OFFSET + i * SECTOR_SIZE
+                out[i * SECTOR_SIZE:(i + 1) * SECTOR_SIZE] = decoded[start:start + SECTOR_SIZE].ljust(SECTOR_SIZE, b'\0')
+            out[14 * SECTOR_SIZE:14 * SECTOR_SIZE + len(DISK6_VOLUME_RECORD)] = DISK6_VOLUME_RECORD
+            out[16 * SECTOR_SIZE:17 * SECTOR_SIZE] = decoded[CENTOPS_T0_CATALOG_OFFSET:CENTOPS_T0_CATALOG_OFFSET + SECTOR_SIZE].ljust(SECTOR_SIZE, b'\0')
+            if verbose:
+                print(f'T{track:02d} S{side}: centops-t0s0 boot=0..9 vol=14 catalog=16')
+            return bytes(out)
         else:
             starts = NOMINAL_STARTS
             mode = 'nominal'
