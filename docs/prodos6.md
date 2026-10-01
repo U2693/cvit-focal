@@ -77,4 +77,5 @@ type       byte    ; SYS/BIN/TXT/BAS/DIR equivalent
 2. Console `putc`/`puts`/`getc` routines.
 3. Hawk `read_block`/`write_block` wrappers over native 400-byte sectors. **Started:** `CAT` reads sector `0x20` directly.
 4. Read `SYSTEM` library and list members with `CAT`. **Started:** current stub reads page 0 and prints rows until the `84 8D` terminator.
-5. Load and run `SYSTEM/COMMAND`.
+5. `TYPE WELCOME` demo: a text member is read from Hawk and displayed on the console. **Done for one-sector `SYSTEM/WELCOME`.**
+6. Load and run `SYSTEM/COMMAND`.
