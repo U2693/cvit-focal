@@ -40,6 +40,7 @@ public static class BiscvitProgram
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
                 else if (a == "--hawk" && i + 1 < args.Length) cpu.MountHawk(args[++i]);
                 else if (a == "--hawk-sector-size" && i + 1 < args.Length) cpu.HawkSectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
+                else if (a == "--hawk-sector-stride" && i + 1 < args.Length) cpu.HawkSectorStride = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--hawk-sectors-per-track" && i + 1 < args.Length) cpu.HawkSectorsPerTrack = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--hawk-heads" && i + 1 < args.Length) cpu.HawkHeads = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--hawk-image-offset" && i + 1 < args.Length) cpu.HawkImageOffset = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -616,6 +617,7 @@ public sealed class Cpu6
     public int FloppySectorsPerTrack { get; set; } = 26;
     public int FloppySectorSize { get; set; } = 128;
     public int HawkSectorSize { get; set; } = 400;
+    public int HawkSectorStride { get; set; } = 512;
     public int HawkSectorsPerTrack { get; set; } = 16;
     public int HawkHeads { get; set; } = 5;
     public int HawkImageOffset { get; set; } = -1;
@@ -647,7 +649,7 @@ public sealed class Cpu6
     public void MountHawk(string path)
     {
         hawkPath = path;
-        hawkImage = File.Exists(path) ? File.ReadAllBytes(path) : new byte[HawkSectorSize * HawkSectorsPerTrack * HawkHeads * 203];
+        hawkImage = File.Exists(path) ? File.ReadAllBytes(path) : new byte[HawkSectorStride * HawkSectorsPerTrack * HawkHeads * 203];
         if (HawkImageOffset < 0) HawkImageOffset = DetectHawkImageOffset(hawkImage);
         hawkStatus = 0;
         hawkDriveStatus = 0x3F;
@@ -1086,29 +1088,39 @@ public sealed class Cpu6
             throw;
         }
     }
-    int HawkImageOffsetForAddress()
+    int HawkLogicalSectorForAddress()
     {
         int cylinder = (hawkSectorAddress >> 5) & 0x7FF;
         int head = (hawkSectorAddress >> 4) & 1;
         int sector = hawkSectorAddress & 0x0F;
-        int logicalSector = ((cylinder * HawkHeads) + head) * HawkSectorsPerTrack + sector;
-        return HawkImageOffset + logicalSector * HawkSectorSize;
+        return ((cylinder * HawkHeads) + head) * HawkSectorsPerTrack + sector;
     }
+    int HawkImageOffsetForLogicalSector(int logicalSector) => HawkImageOffset + logicalSector * HawkSectorStride;
     void HawkTransfer(bool read)
     {
-        int imageOffset = HawkImageOffsetForAddress();
+        int logicalSector = HawkLogicalSectorForAddress();
+        int imageOffset = HawkImageOffsetForLogicalSector(logicalSector);
         int count = DmaTransferCount();
         if (count <= 0) count = HawkSectorSize;
-        if (imageOffset < 0 || imageOffset + count > hawkImage.Length) throw new InvalidOperationException($"Hawk address out of range: addr=${hawkSectorAddress:X4} offset={imageOffset} count={count}");
         if (dmaAddr + count > 65536) throw new InvalidOperationException("Hawk DMA transfer crosses memory end");
         if (FloppyTrace)
         {
             int cylinder = (hawkSectorAddress >> 5) & 0x7FF, head = (hawkSectorAddress >> 4) & 1, sector = hawkSectorAddress & 0x0F;
-            string first16 = read ? BitConverter.ToString(hawkImage, imageOffset, Math.Min(16, count)).Replace("-", " ") : "";
-            Console.Error.WriteLine($"Hawk {(read ? "READ" : "WRITE")} unit={hawkUnit & 0x0F} cyl={cylinder} head={head} sector={sector} addr=${hawkSectorAddress:X4} bytes={count} dma=${dmaAddr:X4} raw_offset={imageOffset} first16={first16}");
+            string first16 = read && imageOffset >= 0 && imageOffset < hawkImage.Length ? BitConverter.ToString(hawkImage, imageOffset, Math.Min(16, Math.Min(HawkSectorSize, hawkImage.Length - imageOffset))).Replace("-", " ") : "";
+            Console.Error.WriteLine($"Hawk {(read ? "READ" : "WRITE")} unit={hawkUnit & 0x0F} cyl={cylinder} head={head} sector={sector} addr=${hawkSectorAddress:X4} bytes={count} dma=${dmaAddr:X4} raw_offset={imageOffset} stride={HawkSectorStride} first16={first16}");
         }
-        if (read) Buffer.BlockCopy(hawkImage, imageOffset, mem, dmaAddr, count);
-        else { Buffer.BlockCopy(mem, dmaAddr, hawkImage, imageOffset, count); SaveHawk(); }
+        int remaining = count, done = 0;
+        while (remaining > 0)
+        {
+            int n = Math.Min(HawkSectorSize, remaining);
+            int off = HawkImageOffsetForLogicalSector(logicalSector++);
+            if (off < 0 || off + n > hawkImage.Length) throw new InvalidOperationException($"Hawk address out of range: addr=${hawkSectorAddress:X4} offset={off} count={n}");
+            if (read) Buffer.BlockCopy(hawkImage, off, mem, dmaAddr + done, n);
+            else Buffer.BlockCopy(mem, dmaAddr + done, hawkImage, off, n);
+            done += n;
+            remaining -= n;
+        }
+        if (!read) SaveHawk();
     }
 
     byte ReadFloppyReg(ushort a)
