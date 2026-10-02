@@ -35,6 +35,8 @@ byte 12 = `0x08 + start page // 128`, byte 13 = attr (`14`).  Pages are 200 byte
 mkhawk starts every member on a sector boundary (even page), so member N is at
 sector `0x20 + page/2`.  `basic.system` is `SYSTEM/BASIC`, `command.system` is
 `SYSTEM/COMMAND`; the kernel is `SYSTEM/KERNEL`.  Member names are max 10 chars.
+The current test KERNEL loads `SYSTEM/COMMAND` at `0x3000`; COMMAND reads the
+SYSTEM directory sector for `CAT` and the WELCOME data sector for `TYPE WELCOME`.
 
 ## Boot sector
 Parameters at `0x0105`: start sector, sector count, load address, entry address

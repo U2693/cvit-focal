@@ -35,8 +35,8 @@ stable API without knowing internal addresses:
 | `082D` | `set_prefix` |
 | `0830` | `get_prefix` |
 
-For now, only the console/banner path is implemented; unimplemented vectors print
-`?UNIMPL` and halt/return during bring-up.
+For now, KERNEL provides the boot/banner and COMMAND loader path; unimplemented
+vectors print `?UNIMPL` and return during bring-up.
 
 ## User model
 
@@ -78,4 +78,5 @@ type       byte    ; SYS/BIN/TXT/BAS/DIR equivalent
 3. Hawk `read_block`/`write_block` wrappers over native 400-byte sectors. **Started:** `CAT` reads sector `0x20` directly.
 4. Read `SYSTEM` library and list members with `CAT`. **Started:** current stub reads page 0 and prints rows until the `84 8D` terminator.
 5. `TYPE WELCOME` demo: a text member is read from Hawk and displayed on the console. **Done for one-sector `SYSTEM/WELCOME`.**
-6. Load and run `SYSTEM/COMMAND`.
+6. Load and run `SYSTEM/COMMAND`. **Done:** KERNEL loads COMMAND at `0x3000` and jumps to it.
+7. Interactive COMMAND loop. **Started:** supports `CAT`, `TYPE WELCOME`, `HELP`, and `QUIT`.
