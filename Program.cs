@@ -64,7 +64,7 @@ public static class BiscvitProgram
         Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image] [--boot-floppy] [--run] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
-        Console.WriteLine("TUI keys: Ctrl-Tab, Alt-=, or Esc = terminal focus; s step, r run/pause, n 100 steps, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
+        Console.WriteLine("TUI keys: Ctrl-Tab, Alt-=, or Esc = terminal focus; s step, r run/pause, n 100 steps, c clear HALT, Ctrl-R reset CPU, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
     }
     static void QueueText(Cpu6 cpu, string text)
     {
@@ -97,6 +97,7 @@ public sealed class Tui
     readonly ushort[] lastPairs = new ushort[8];
     ushort lastPc;
     ushort memAt;
+    ushort resetPc;
     bool running;
     bool haveLast;
     bool terminalFocus;
@@ -111,6 +112,7 @@ public sealed class Tui
     {
         this.cpu = cpu;
         memAt = cpu.PC;
+        resetPc = cpu.PC;
         Snapshot();
         cpu.TerminalOutput += ch =>
         {
@@ -187,7 +189,11 @@ public sealed class Tui
             {
                 case ConsoleKey.S: running = false; if (!cpu.Halted) StepOne(); status = "stepped"; if (followPc) memAt = (ushort)(cpu.PC & 0xFFF0); break;
                 case ConsoleKey.N: for (int i = 0; i < 100 && !cpu.Halted; i++) if (!StepOne()) break; status = "+100 steps"; if (followPc) memAt = (ushort)(cpu.PC & 0xFFF0); break;
-                case ConsoleKey.R: running = !running; status = running ? "running" : "paused"; break;
+                case ConsoleKey.C: cpu.ClearHalt(); status = "HALT cleared"; break;
+                case ConsoleKey.R:
+                    if ((k.Modifiers & ConsoleModifiers.Control) != 0) { ResetCpu(); break; }
+                    if (cpu.Halted) cpu.ClearHalt();
+                    running = !running; status = running ? "running" : "paused"; break;
                 case ConsoleKey.Add:
                 case ConsoleKey.OemPlus: stepsPerTick = Math.Min(50000, stepsPerTick * 2); status = "speed " + stepsPerTick + "/tick"; break;
                 case ConsoleKey.Subtract:
@@ -200,7 +206,7 @@ public sealed class Tui
                 case ConsoleKey.PageDown: followPc = false; memAt += 256; break;
                 case ConsoleKey.Home: followPc = true; memAt = (ushort)(cpu.PC & 0xFFF0); status = "following PC"; break;
                 case ConsoleKey.G: { string s = Prompt("goto hex address"); if (s.Length > 0) { memAt = BiscvitProgram.Hex16(s); followPc = false; } break; }
-                case ConsoleKey.P: { string s = Prompt("set PC"); if (s.Length > 0) { cpu.PC = BiscvitProgram.Hex16(s); followPc = true; } break; }
+                case ConsoleKey.P: { string s = Prompt("set PC"); if (s.Length > 0) { cpu.PC = BiscvitProgram.Hex16(s); resetPc = cpu.PC; followPc = true; } break; }
                 case ConsoleKey.B: { string s = Prompt("breakpoint hex (blank clears)"); cpu.Breakpoint = s.Length == 0 ? -1 : BiscvitProgram.Hex16(s); break; }
                 case ConsoleKey.L:
                     string f = Prompt("load binary file"); if (f.Length == 0) break;
@@ -220,6 +226,19 @@ public sealed class Tui
     {
         terminalFocus = !terminalFocus;
         status = terminalFocus ? "terminal focus" : "TUI focus";
+    }
+
+    void ResetCpu()
+    {
+        string s = Prompt("reset PC (blank default " + resetPc.ToString("X4") + ")");
+        ushort pc = s.Length == 0 ? resetPc : BiscvitProgram.Hex16(s);
+        cpu.Reset(pc);
+        resetPc = pc;
+        running = false;
+        followPc = true;
+        memAt = (ushort)(cpu.PC & 0xFFF0);
+        Snapshot();
+        status = "CPU reset PC=" + pc.ToString("X4");
     }
 
     void SendTerminalKey(ConsoleKeyInfo k)
@@ -523,8 +542,8 @@ public sealed class Tui
         Put(x, y - 1, BoxTitle(" Help ", width));
         Console.ForegroundColor = ConsoleColor.Yellow;
         Put(x, y,     Pad("Alt-= focus terminal   s step   r run/pause   n +100", width));
-        Put(x, y + 1, Pad("+/- speed   [/ ] refresh   arrows/page memory   home PC", width));
-        Put(x, y + 2, Pad("g goto   m edit   p set PC   b break   l load   q quit", width));
+        Put(x, y + 1, Pad("c clear HALT   Ctrl-R reset   +/- speed   [/ ] refresh", width));
+        Put(x, y + 2, Pad("arrows/page memory   g goto   m edit   p PC   b break   q quit", width));
         Console.ResetColor();
     }
 
@@ -639,7 +658,24 @@ public sealed class Cpu6
         public InterruptFrame(byte ipl, ushort pc, byte flags) { Ipl = ipl; Pc = pc; Flags = flags; }
     }
 
-    public Cpu6() { PC = 0x0100; SetRegPair(SP, 0xFFFE); }
+    public Cpu6() { Reset(); }
+    public void ClearHalt() { Halted = false; }
+    public void Reset() { Reset(0x0100); }
+    public void Reset(ushort pc)
+    {
+        Array.Clear(mem, 0, 0x100); // CPU6 interlevel registers live in low memory.
+        flags = 0;
+        ipl = 0;
+        op = 0;
+        interruptStack.Clear();
+        dmaAddr = 0;
+        dmaCount = 0;
+        dmaMode = 0;
+        muxInterruptEnabled = false;
+        PC = pc;
+        SetRegPair(SP, 0xFFFE);
+        Halted = false;
+    }
     public void Load(byte[] bytes, ushort address) { if (address + bytes.Length > 65536) throw new ArgumentException("load does not fit memory"); Buffer.BlockCopy(bytes, 0, mem, address, bytes.Length); }
     public void MountFloppy(string path)
     {
@@ -679,6 +715,7 @@ public sealed class Cpu6
         int n = Math.Min(floppyImage.Length, 0x10000 - 0x0100);
         Buffer.BlockCopy(floppyImage, 0, mem, 0x0100, n);
         PC = 0x0103;
+        Halted = false;
         Console.WriteLine("booted floppy: loaded {0} bytes at 0100, PC=0103", n);
     }
 

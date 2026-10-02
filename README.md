@@ -21,4 +21,4 @@ Experimental: `--ffc-linear-experimental` makes the FFC shim treat track/sector 
 
 Devices: MUX terminal status/data at `F200/F201`, simple floppy registers at `F140-F145`, Hawk drive registers at `F140-F148` when `--hawk` is mounted, and a bootstrap-compatible FFC shim at `F800/F801` supporting command DMA (`43`) and execute (`45`).
 
-TUI keys: `Ctrl-Tab`, `Alt-=` or `Esc =` toggle terminal focus, `s` step, `r` run/pause, `n` step 100, `+`/`-` adjust run speed, `[`/`]` adjust refresh rate, arrows/page scroll memory, `home` follow PC, `g` goto, `m` edit memory bytes, `p` set PC, `b` breakpoint, `l` load binary, `q`/F10 quit. Writes to MMIO `F201` appear in the terminal pane; typed printable keys feed reads from `F201`.
+TUI keys: `Ctrl-Tab`, `Alt-=` or `Esc =` toggle terminal focus, `s` step, `r` run/pause, `n` step 100, `c` clear HALT, `Ctrl-R` reset CPU, `+`/`-` adjust run speed, `[`/`]` adjust refresh rate, arrows/page scroll memory, `home` follow PC, `g` goto, `m` edit memory bytes, `p` set PC, `b` breakpoint, `l` load binary, `q`/F10 quit. Writes to MMIO `F201` appear in the terminal pane; typed printable keys feed reads from `F201`.
