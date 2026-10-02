@@ -148,7 +148,8 @@ public sealed class Tui
                 }
                 if (!Console.KeyAvailable) { System.Threading.Thread.Sleep(running ? 1 : 25); continue; }
                 var k = Console.ReadKey(true);
-                if (k.Key == ConsoleKey.F10 || k.Key == ConsoleKey.Q) break;
+                if (k.Key == ConsoleKey.F10) break;
+                if (!terminalFocus && k.Key == ConsoleKey.Q) break;
                 Handle(k); Draw();
             }
         }
