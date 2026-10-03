@@ -2,7 +2,7 @@
 
 Built by `scripts/mkhawk.py` (test image: `scripts/mk_test_os.py` -> `out/os.img`;
 boot it with `HAWK=out/os.img ./scripts/boot_hawk.sh`).  The planned OS
-personality is documented in `docs/prodos6.md`.
+personality is documented in `docs/cvit.md`.
 
 Geometry: 12,992 records, 400-byte logical sectors, 512-byte stride (112 bytes of
 `0xFF` padding); `--stride 400` for packed images.  Hawk sector address

@@ -399,6 +399,12 @@ public sealed class Tui
             }
             else args = $"AX,{ImplicitWordDest(op)}";
         }
+        else if (op == 0x66)
+        {
+            bytes += $" {b1:X2}";
+            inst = "SVC";
+            args = $"#{b1:X2}";
+        }
         else if (op == 0x67 && b1 == 0x4A && b2 == 0x86)
         {
             bytes += $" {b1:X2} {b2:X2}";
@@ -797,7 +803,7 @@ public sealed class Cpu6
         ServiceInterrupts();
         ushort oldpc = PC; op = Fetch();
         if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX));
-        if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op == 0x67) MemOp(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
+        if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op == 0x66) Svc(); else if (op == 0x67) MemOp(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
     }
 
     void ServiceInterrupts()
@@ -936,9 +942,20 @@ public sealed class Cpu6
         else Unknown();
     }
     void Rt() { ushort a = Addr(2, op & 7); if ((op & 8) != 0) Write16(a, RegPair(RT)); else SetRegPair(RT, Read16(a)); Flag16(RegPair(RT), false, 0); }
+    void Svc()
+    {
+        byte svc = Fetch();
+        if (svc == 0x40 && Read8(0x0806) == 0x71)
+        {
+            Push(RegPair(RT));
+            SetRegPair(RT, PC);
+            PC = 0x0806;
+            return;
+        }
+        Unknown();
+    }
     void Jump()
     {
-        if (op == 0x76) { ipl = 15; return; }
         if (op == 0x7E) { PushBytes(); return; }
         if (op == 0x7F) { PopBytes(); return; }
         ushort n; switch (op & 7) { case 0: n = RegPair(AX); break; case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); n = Read16((ushort)(PC + off)); break; } case 5: n = Indexed(2); break; default: Unknown(); return; }

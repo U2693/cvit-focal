@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate ProDOS-6 KERNEL/COMMAND test members and build out/os.img."""
+"""Generate cvit KERNEL/COMMAND test members and build out/os.img."""
 import subprocess, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -8,7 +8,7 @@ from cpu6asm import Asm
 PAGE = 200
 DATA = 0x20
 COMMAND_LOAD = 0x3000
-WELCOME_TEXT = b"WELCOME TO PRODOS-6\r\nTHIS TEXT WAS LOADED FROM /SYSTEM/WELCOME.\r\n"
+WELCOME_TEXT = b"WELCOME TO cvit\r\nTHIS TEXT WAS LOADED FROM /SYSTEM/WELCOME.\r\n"
 
 root = Path(__file__).parent.parent
 (root / "os").mkdir(exist_ok=True)
@@ -87,7 +87,7 @@ def build_command(welcome_sector):
         a.label(nxt)
 
     a.label("start")
-    a.print("\r\nPRODOS-6 COMMAND V0.1\r\n")
+    a.print("\r\ncvit COMMAND V0.1\r\n")
     a.print("TYPE HELP FOR COMMANDS\r\n")
     a.label("prompt")
     a.print("\r\n]")
@@ -99,13 +99,36 @@ def build_command(welcome_sector):
     cmp_al('T', "cmd_type"); cmp_al('t', "cmd_type")
     cmp_al('H', "cmd_help"); cmp_al('h', "cmd_help")
     cmp_al('Q', "cmd_quit"); cmp_al('q', "cmd_quit")
+    cmp_al('.', "cmd_dot")
+    a.jsr_abs("drain_line")
+    a.print("?SYNTAX\r\n")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_dot")
+    a.jsr_abs("getc_echo")
+    cmp_al('S', "cmd_sta"); cmp_al('s', "cmd_sta")
     a.jsr_abs("drain_line")
     a.print("?SYNTAX\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_help")
     a.jsr_abs("drain_line")
-    a.print("COMMANDS: CAT, TYPE WELCOME, HELP, QUIT\r\n")
+    a.print("COMMANDS: CAT, TYPE WELCOME, HELP, .STA, QUIT\r\n")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_sta")
+    a.jsr_abs("drain_line")
+    a.print("\r\nCPU6\r\n")
+    a.print("MEM  128K\r\n\r\n")
+    a.print("DISKS\r\n")
+    a.print(" F0:  8\" FLOPPY   READY\r\n")
+    a.print(" F1:  8\" FLOPPY   EMPTY\r\n")
+    a.print(" D0:  HAWK        READY\r\n\r\n")
+    a.print("TERMINALS\r\n")
+    a.print(" T0:  CONSOLE     9600\r\n")
+    a.print(" T1:  MUX1        OFFLINE\r\n")
+    a.print(" T2:  MUX2        OFFLINE\r\n")
+    a.print(" T3:  MUX3        OFFLINE\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_cat")
@@ -163,7 +186,7 @@ def build_kernel(command_sector, command_sectors=1):
         a.jmp_abs(vector)
 
     a.label("cold_start")
-    a.print("\r\nPRODOS-6 V0.1\r\n")
+    a.print("\r\ncvit V0.1\r\n")
     a.print("COPYRIGHT (C) 2026 BISCVIT\r\n")
     a.jsr_abs("load_command")
     a.lda_i(COMMAND_LOAD).xay().jmp_y()
@@ -173,6 +196,9 @@ def build_kernel(command_sector, command_sectors=1):
 
     a.label("quit")
     a.print("\r\nBYE\r\n").hlt().jmp("quit")
+
+    a.label("syscall")
+    a.stab_d(0xF201).rsr()   # SVC $40 / JSR $0806: console putc from AL.
 
     a.label("load_command")
     for i in range(command_sectors):
@@ -185,7 +211,7 @@ def build_kernel(command_sector, command_sectors=1):
     # Bring-up stubs for the future MLI-ish API.  Returning is friendlier for calls;
     # direct jumps still make the missing vector visible.
     for vector in [
-        "syscall", "read_block", "write_block", "open", "close", "read", "write",
+        "read_block", "write_block", "open", "close", "read", "write",
         "get_file_info", "set_file_info", "create", "destroy", "rename",
         "set_prefix", "get_prefix",
     ]:
@@ -203,7 +229,7 @@ welcome_page = 2 + alloc_pages(len(kernel))
 welcome_sector = DATA + welcome_page // 2
 command = build_command(welcome_sector)
 assert command_sectors == -(-len(command) // 400)
-basic_placeholder = b"P6\x00\x20\x00\x20\x00\x00BASIC placeholder\r" * 8
+basic_placeholder = b"CV\x00\x20\x00\x20\x00\x00BASIC placeholder\r" * 8
 command_page = welcome_page + alloc_pages(len(WELCOME_TEXT)) + alloc_pages(len(basic_placeholder))
 command_sector = DATA + command_page // 2
 kernel = build_kernel(command_sector, command_sectors)

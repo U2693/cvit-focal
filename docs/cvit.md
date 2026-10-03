@@ -1,6 +1,6 @@
-# ProDOS-6 personality
+# cvit personality
 
-ProDOS-6 is the planned Apple ProDOS-inspired personality for the custom Hawk
+cvit is the planned Apple ProDOS-inspired personality for the custom Hawk
 boot path.  It is not a disk-format clone; it borrows ProDOS' user model and MLI
 shape while using the native 400-byte Disk6/Hawk layout in `docs/hawk-layout.md`.
 
@@ -35,15 +35,16 @@ stable API without knowing internal addresses:
 | `082D` | `set_prefix` |
 | `0830` | `get_prefix` |
 
-For now, KERNEL provides the boot/banner and COMMAND loader path; unimplemented
-vectors print `?UNIMPL` and return during bring-up.
+For now, KERNEL provides the boot/banner and COMMAND loader path. The `syscall`
+vector also services `SVC $40` as a console `putc` with the character in `AL`.
+Unimplemented vectors print `?UNIMPL` and return during bring-up.
 
 ## User model
 
 Prompt and paths should feel Apple-ish:
 
 ```text
-PRODOS-6 V0.1
+cvit V0.1
 ]PREFIX /SYSTEM
 ]CAT
 ]RUN COMMAND
@@ -60,11 +61,11 @@ Preferred path syntax:
 
 ## Executable convention
 
-Flat binaries can remain during early bring-up, but ProDOS-6 executables should
+Flat binaries can remain during early bring-up, but cvit executables should
 move toward a small header:
 
 ```text
-magic      "P6"
+magic      "CV"
 load_addr  u16
 entry_addr u16
 size       u16/u24

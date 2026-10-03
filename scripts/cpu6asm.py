@@ -54,6 +54,7 @@ class Asm:
     def xfrb_al_bl(self): return self.raw(0x45, 0x13)
     def andb_bl_al(self): return self.raw(0x42, 0x31)
     def jmp_y(self): return self.raw(0x75, 0x60)
+    def svc(self, v): return self.raw(0x66, v & 255)
     # DMA
     def dma_sad_a(self): return self.raw(0x2F, 0x00)
     def dma_sct_a(self): return self.raw(0x2F, 0x02)
