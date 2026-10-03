@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cvit system diagram</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.35; color: #222; }
+  h1, h2 { color: #17324d; }
+  code { background: #f3f5f7; padding: 0.1rem 0.25rem; border-radius: 3px; }
+  pre { background: #f3f5f7; padding: 1rem; overflow: auto; }
+  .diagram { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #fbfbfc; border: 1px solid #ccd3dc; padding: 1rem; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  th, td { border: 1px solid #ccd3dc; padding: 0.35rem 0.6rem; text-align: left; }
+  th { background: #eef3f8; }
+</style>
+</head>
+<body>
+<h1>cvit system diagram</h1>
+
+<p><b>cvit</b> is the native Hawk/Disk6 personality for biscvit. It boots a resident
+kernel, loads <code>SYSTEM/COMMAND</code>, and currently uses a mix of kernel vectors and
+emulator-assisted SVCs while the filesystem and tools are brought up.</p>
+
+<h2>Boot and runtime layout</h2>
+<pre class="diagram">
++-------------------+      +----------------------+      +------------------+
+| Bootstrap ROM     | ---> | Hawk boot sector     | ---> | SYSTEM/KERNEL    |
+| FC00              |      | sector 0, entry 0103 |      | loaded at 0800   |
++-------------------+      +----------------------+      +--------+---------+
+                                                                  |
+                                                                  v
+                                                        +------------------+
+                                                        | SYSTEM/COMMAND   |
+                                                        | loaded at 3000   |
+                                                        +--------+---------+
+                                                                 |
+                  +----------------------------------------------+----------------+
+                  |                         |                    |                |
+                  v                         v                    v                v
+              CAT / TYPE                 .DEBUG                .CED             .STA
+         SYSTEM directory            monitor shell          line editor      status demo
+</pre>
+
+<h2>Disk image model</h2>
+<pre class="diagram">
+out/os.img Hawk image
+
+sector 0x0000       boot sector
+sector 0x0012..17   SYSTEM UAL / allocation list
+sector 0x0020       SYSTEM directory page 0
+sector 0x0021..     SYSTEM member payload sectors
+
+400-byte Hawk payload sector = 2 cvit pages of 200 bytes
+member allocation is sector-aligned; even empty files get one sector
+</pre>
+
+<h2>SYSTEM members</h2>
+<p><code>scripts/mk_test_os.py</code> generates boot-critical members and pulls in all files
+from <code>./os</code> as SYSTEM members. Current examples include:</p>
+
+<table>
+<tr><th>Member</th><th>Role</th></tr>
+<tr><td>KERNEL</td><td>resident kernel and jump table</td></tr>
+<tr><td>COMMAND</td><td>interactive command shell</td></tr>
+<tr><td>WELCOME</td><td>text demo for TYPE</td></tr>
+<tr><td>CED</td><td>CED is currently resident/emulator-assisted, placeholder member exists</td></tr>
+<tr><td>TEST, ZEP, VIKING</td><td>text/editing targets</td></tr>
+</table>
+
+<h2>Kernel jump table</h2>
+<table>
+<tr><th>Address</th><th>Vector</th></tr>
+<tr><td>0800</td><td>cold_start</td></tr>
+<tr><td>0803</td><td>warm_start</td></tr>
+<tr><td>0806</td><td>syscall</td></tr>
+<tr><td>0809</td><td>quit</td></tr>
+<tr><td>080C+</td><td>future filesystem/device API vectors</td></tr>
+</table>
+
+<h2>System call ABI</h2>
+<p>Programs call cvit services with <code>SVC $40</code>:</p>
+<pre><code>AX = function selector
+BX = control block pointer
+SVC $40</code></pre>
+
+<table>
+<tr><th>AX</th><th>Function</th><th>Control block</th></tr>
+<tr><td>0001</td><td>console putc</td><td><code>CB+0</code>: byte character</td></tr>
+</table>
+
+<p>Unknown selectors currently print <code>?SVC</code> and return.</p>
+
+<h2>Emulator-assisted services during bring-up</h2>
+<table>
+<tr><th>SVC</th><th>Purpose</th></tr>
+<tr><td>$41</td><td>DEBUG register display</td></tr>
+<tr><td>$42</td><td>DEBUG memory examine</td></tr>
+<tr><td>$43</td><td>DEBUG disassembly</td></tr>
+<tr><td>$44</td><td>DEBUG deposit</td></tr>
+<tr><td>$50</td><td>CED line editor</td></tr>
+<tr><td>$51</td><td>TYPE member</td></tr>
+</table>
+
+<h2>CED flow</h2>
+<pre class="diagram">
+].ced H1:ZEP
+        |
+        v
++------------------+       loads existing text if present
+| CED line buffer  | <--------------------------------+
++--------+---------+                                  |
+         |                                            |
+         | W / WRITE                                  |
+         v                                            |
++------------------+       create fixed one-sector     |
+| CvitFileSystem   | ----> member if missing           |
++--------+---------+                                  |
+         |                                            |
+         v                                            |
++------------------+                                  |
+| Hawk image       | ---------------------------------+
+| SYSTEM directory |
+| SYSTEM UAL       |
+| member payload   |
++------------------+
+</pre>
+
+<h2>FQFN rules</h2>
+<pre><code>[device:][path/]name
+
+H0: Hawk platter 0
+H1: Hawk platter 1
+</code></pre>
+<p>Examples: <code>ZEP</code>, <code>H1:ZEP</code>, <code>/SYSTEM/ZEP</code>,
+<code>H0:/SYSTEM/TEST</code>. Missing device defaults to <code>H0:</code>; missing path defaults
+to the current prefix, initially <code>/SYSTEM</code>.</p>
+
+<h2>Near-term cleanup direction</h2>
+<ul>
+<li>Move emulator-assisted DEBUG/CED/TYPE services behind a cleaner service-provider boundary.</li>
+<li>Promote TYPE/CED operations onto kernel filesystem calls.</li>
+<li>Add file sizes and richer metadata instead of trimming trailing spaces.</li>
+<li>Add allocation growth, deletion, and free-space reuse.</li>
+</ul>
+</body>
+</html>

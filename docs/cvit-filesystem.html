@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cvit filesystem</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.35; color: #222; }
+  h1, h2, h3 { color: #17324d; }
+  code { background: #f3f5f7; padding: 0.1rem 0.25rem; border-radius: 3px; }
+  pre { background: #f3f5f7; padding: 1rem; overflow: auto; }
+  .diagram { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #fbfbfc; border: 1px solid #ccd3dc; padding: 1rem; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  th, td { border: 1px solid #ccd3dc; padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
+  th { background: #eef3f8; }
+  .done { color: #176b2c; font-weight: 600; }
+  .partial { color: #8a5a00; font-weight: 600; }
+  .planned { color: #555; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>cvit filesystem</h1>
+
+<p>The cvit filesystem is the native filesystem personality used by the biscvit
+Hawk boot path. It is <b>not</b> an Apple ProDOS disk format clone. It borrows
+some user-facing ideas from ProDOS and CED, while using the project’s native
+400-byte Hawk/Disk6 image layout.</p>
+
+<h2>Current on-disk layout</h2>
+<pre class="diagram">
+Hawk image: out/os.img
+
+sector 0x0000       boot sector
+sector 0x000E       control sector
+sector 0x0010       volume header
+sector 0x0012..17   SYSTEM UAL sectors
+sector 0x0020       SYSTEM directory page 0
+sector 0x0021..     SYSTEM member payload sectors
+
+Hawk payload sector = 400 bytes
+cvit library page   = 200 bytes
+1 sector            = 2 cvit pages
+</pre>
+
+<h2>Allocation model</h2>
+<table>
+<tr><th>Concept</th><th>Current behavior</th></tr>
+<tr><td>Directory unit</td><td>200-byte cvit page number stored in SYSTEM directory rows.</td></tr>
+<tr><td>Allocation unit</td><td>400-byte Hawk sector. Members are sector-aligned.</td></tr>
+<tr><td>Empty file allocation</td><td>Empty files now receive one sector to avoid overlap with the next member.</td></tr>
+<tr><td>Growth</td><td>Not supported yet. Writes must fit in the member’s current allocation.</td></tr>
+<tr><td>Creation</td><td>CED can create a fixed one-sector SYSTEM member by appending a directory row and UAL entry.</td></tr>
+<tr><td>Deletion/reuse</td><td>Not supported yet. Created sectors are appended; freed space is not tracked.</td></tr>
+</table>
+
+<h2>SYSTEM directory rows</h2>
+<p>The current SYSTEM library directory is a simple row table in sector
+<code>0x20</code>. Each row is 16 bytes. Member names are uppercase and currently limited
+to 10 characters.</p>
+
+<table>
+<tr><th>Offset</th><th>Meaning</th></tr>
+<tr><td>0..9</td><td>High-bit uppercase member name, padded with spaces.</td></tr>
+<tr><td>10</td><td>Low 7 bits of start page.</td></tr>
+<tr><td>11</td><td>Currently unused/reserved.</td></tr>
+<tr><td>12</td><td>High page component stored as <code>0x08 + page / 128</code>.</td></tr>
+<tr><td>13</td><td>Current type/attribute byte, commonly <code>0x14</code>.</td></tr>
+<tr><td>14..15</td><td>Currently unused/reserved.</td></tr>
+</table>
+
+<p>The directory terminator is <code>84 8D</code>. Current tooling only uses directory page
+0, so there is a practical limit on the number of members until directory growth
+is implemented.</p>
+
+<h2>SYSTEM UAL</h2>
+<p>The SYSTEM UAL begins at sector <code>0x12</code>. It lists the sectors making up the
+SYSTEM library. Current creation appends one new sector to that list and bumps
+the sector count stored at the start of UAL sector 0.</p>
+
+<pre class="diagram">
+UAL sector 0:
+  bytes 0..1   sector count minus one
+  bytes 2..3   load address placeholder
+  byte  4      FSI shift placeholder
+  byte  5      reserved
+  bytes 6..    3-byte sector entries, terminated by FF FF FF
+</pre>
+
+<h2>Fully-qualified file names</h2>
+<pre><code>[device:][path/]name
+
+H0:  Hawk platter 0
+H1:  Hawk platter 1
+</code></pre>
+
+<table>
+<tr><th>Example</th><th>Meaning</th></tr>
+<tr><td><code>ZEP</code></td><td>Member <code>ZEP</code> under the current prefix on the current device.</td></tr>
+<tr><td><code>H1:ZEP</code></td><td>Member <code>ZEP</code> on Hawk platter 1. Currently display-preserved but mapped to the mounted Hawk image.</td></tr>
+<tr><td><code>/SYSTEM/ZEP</code></td><td>Absolute path on current device.</td></tr>
+<tr><td><code>H0:/SYSTEM/TEST</code></td><td>Fully qualified device plus absolute path.</td></tr>
+</table>
+
+<h2>Current features</h2>
+<table>
+<tr><th>Status</th><th>Feature</th><th>Notes</th></tr>
+<tr><td class="done">Done</td><td>Bootable Hawk image</td><td><code>scripts/mkhawk.py</code> builds <code>out/os.img</code>.</td></tr>
+<tr><td class="done">Done</td><td>SYSTEM member packaging</td><td><code>scripts/mk_test_os.py</code> pulls in all regular files from <code>./os</code>.</td></tr>
+<tr><td class="done">Done</td><td>Sector-aligned member allocation</td><td>All members, including empty files, receive whole-sector allocation.</td></tr>
+<tr><td class="done">Done</td><td>CAT</td><td>Lists SYSTEM directory rows.</td></tr>
+<tr><td class="done">Done</td><td>TYPE name</td><td>Reads and displays existing SYSTEM text members.</td></tr>
+<tr><td class="done">Done</td><td>CED load</td><td><code>.CED file</code> loads existing member text into numbered lines.</td></tr>
+<tr><td class="done">Done</td><td>CED write existing</td><td><code>W</code> overwrites the active member if content fits.</td></tr>
+<tr><td class="done">Done</td><td>CED fixed create</td><td><code>W</code> creates a missing member as one preallocated sector.</td></tr>
+<tr><td class="partial">Partial</td><td>FQFN handling</td><td>Parser recognizes device/path/name forms, but only one mounted Hawk image is active.</td></tr>
+<tr><td class="partial">Partial</td><td>File sizes</td><td>Current text reads infer size by trimming trailing spaces/NULs.</td></tr>
+</table>
+
+<h2>Current examples</h2>
+<pre><code>]cat
+
+NAME       TYPE
+KERNEL     SYS
+WELCOME    TXT
+BASIC      SYS
+CED        SYS
+TEST       SYS
+ZEP        SYS
+VIKING     SYS
+COMMAND    SYS
+
+].ced ook
+CED:1 line1
+CED:2 line2
+CED:w
+Wrote OOK
+CED:q
+
+]type ook
+line1
+line2
+</code></pre>
+
+<h2>Current implementation boundary</h2>
+<p>The emulator now has a <code>CvitFileSystem</code> helper class that encapsulates the
+current SYSTEM member operations:</p>
+
+<ul>
+<li>find member</li>
+<li>read text member</li>
+<li>write text member</li>
+<li>create fixed one-sector member</li>
+<li>append sector to SYSTEM UAL</li>
+<li>encode/decode directory rows</li>
+</ul>
+
+<p>This is still a bring-up shortcut. The plan is to move these semantics behind
+kernel calls so programs do not depend on emulator-assisted services.</p>
+
+<h2>Planned features</h2>
+<table>
+<tr><th>Priority</th><th>Feature</th><th>Notes</th></tr>
+<tr><td>1</td><td>Explicit file size metadata</td><td>Stop inferring size by trimming trailing spaces. Candidate locations: reserved directory bytes or a small cvit file header.</td></tr>
+<tr><td>2</td><td>Kernel read/write APIs</td><td>Move TYPE/CED onto real cvit kernel file calls instead of emulator-assisted services.</td></tr>
+<tr><td>3</td><td>Writable image safety</td><td>Add explicit writable/copy/overlay mode so generated boot images are not accidentally mutated.</td></tr>
+<tr><td>4</td><td>Allocation growth</td><td>Allow files to extend beyond their initial one-sector allocation.</td></tr>
+<tr><td>5</td><td>Directory growth</td><td>Support more than one directory page for SYSTEM and future directories.</td></tr>
+<tr><td>6</td><td>Delete/free/reuse</td><td>Add free-space accounting and safe reuse of deleted sectors.</td></tr>
+<tr><td>7</td><td>Rename</td><td>Update directory rows safely.</td></tr>
+<tr><td>8</td><td>Multiple devices</td><td>Make <code>H0:</code> and <code>H1:</code> map to distinct mounted images/platters.</td></tr>
+<tr><td>9</td><td>Subdirectories/prefix</td><td>Move beyond the single SYSTEM library model.</td></tr>
+</table>
+
+<h2>Known limitations</h2>
+<ul>
+<li>Created files are always one sector.</li>
+<li>Writes larger than the current allocation fail with <code>?TOO BIG</code>.</li>
+<li>No delete, truncate, rename, or sector reuse yet.</li>
+<li>No robust recovery if a write is interrupted midway.</li>
+<li>Only a single mounted Hawk image is used even when FQFNs mention <code>H1:</code>.</li>
+<li>Directory capacity is limited by current single-page SYSTEM directory handling.</li>
+</ul>
+</body>
+</html>
