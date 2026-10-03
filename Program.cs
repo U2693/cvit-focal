@@ -608,11 +608,176 @@ public sealed class Tui
     void PutRaw(int x, int y, string s) => Put(x, y, s);
 }
 
+public sealed class CvitFileSystem
+{
+    public const int PageSize = 200;
+    public const int SystemDataSector = 0x20;
+    public const int SystemUalSector = 0x12;
+    const int DirectoryRowSize = 16;
+    const int DirectoryFirstRow = 16;
+    const int DirectoryPageBytes = PageSize;
+    const int MemberNameLength = 10;
+
+    readonly byte[] image;
+    readonly Func<int, int> imageOffsetForSector;
+    readonly int sectorSize;
+    readonly Action save;
+
+    public CvitFileSystem(byte[] image, Func<int, int> imageOffsetForSector, int sectorSize, Action save)
+    {
+        this.image = image;
+        this.imageOffsetForSector = imageOffsetForSector;
+        this.sectorSize = sectorSize;
+        this.save = save;
+    }
+
+    public bool TryReadTextMember(string name, out string text)
+    {
+        text = "";
+        if (!TryFindMember(name, out int page, out int capacity)) return false;
+        int offset = MemberOffset(page);
+        int end = capacity;
+        while (end > 0 && (image[offset + end - 1] == 0 || image[offset + end - 1] == 0x20)) end--;
+        text = Encoding.ASCII.GetString(image, offset, end);
+        return true;
+    }
+
+    public bool WriteTextMember(string name, string text, bool createIfMissing, out string error)
+    {
+        error = "";
+        if (!TryFindMember(name, out int page, out int capacity))
+        {
+            if (!createIfMissing || !CreateFixedMember(name)) { error = "?NO FILE"; return false; }
+            if (!TryFindMember(name, out page, out capacity)) { error = "?NO FILE"; return false; }
+        }
+        byte[] data = Encoding.ASCII.GetBytes(text);
+        if (data.Length > capacity) { error = "?TOO BIG"; return false; }
+        int offset = MemberOffset(page);
+        Array.Fill<byte>(image, 0x20, offset, capacity);
+        Buffer.BlockCopy(data, 0, image, offset, data.Length);
+        save();
+        return true;
+    }
+
+    public bool CreateFixedMember(string name)
+    {
+        if (String.IsNullOrWhiteSpace(name) || name.Length > MemberNameLength) return false;
+        if (TryFindMember(name, out _, out _)) return true;
+        int dir = imageOffsetForSector(SystemDataSector);
+        if (!RangeOk(dir, sectorSize)) return false;
+        int term = -1;
+        for (int row = DirectoryFirstRow; row < DirectoryPageBytes; row += DirectoryRowSize)
+        {
+            if (image[dir + row] == 0x84 && image[dir + row + 1] == 0x8D) { term = row; break; }
+        }
+        if (term < 0 || term + DirectoryRowSize + 1 >= DirectoryPageBytes) return false;
+
+        int ual = imageOffsetForSector(SystemUalSector);
+        if (!RangeOk(ual, sectorSize)) return false;
+        int nsec = ((image[ual] << 8) | image[ual + 1]) + 1;
+        int newSector = SystemDataSector + nsec;
+        int newPage = nsec * 2;
+        int newOff = imageOffsetForSector(newSector);
+        if (!RangeOk(newOff, sectorSize)) return false;
+
+        WriteDirectoryRow(dir + term, name, newPage);
+        image[dir + term + DirectoryRowSize] = 0x84;
+        image[dir + term + DirectoryRowSize + 1] = 0x8D;
+
+        Array.Fill<byte>(image, 0x20, newOff, sectorSize);
+        image[ual] = (byte)(nsec >> 8);
+        image[ual + 1] = (byte)nsec;
+        AppendSystemUalSector(newSector);
+        save();
+        return true;
+    }
+
+    public bool TryFindMember(string name, out int page, out int capacity)
+    {
+        page = 0; capacity = 0;
+        int dir = imageOffsetForSector(SystemDataSector);
+        if (!RangeOk(dir, sectorSize)) return false;
+        int found = -1, next = Int32.MaxValue;
+        foreach (var entry in DirectoryEntries(dir))
+        {
+            if (String.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase)) found = entry.Page;
+        }
+        if (found < 0) return false;
+        foreach (var entry in DirectoryEntries(dir))
+            if (entry.Page > found && entry.Page < next) next = entry.Page;
+        page = found;
+        capacity = (next == Int32.MaxValue ? 2 : next - found) * PageSize;
+        return capacity > 0;
+    }
+
+    int MemberOffset(int page) => imageOffsetForSector(SystemDataSector + page / 2) + (page & 1) * PageSize;
+    bool RangeOk(int offset, int count) => offset >= 0 && offset + count <= image.Length;
+
+    IEnumerable<(string Name, int Page)> DirectoryEntries(int dir)
+    {
+        for (int row = DirectoryFirstRow; row < sectorSize; row += DirectoryRowSize)
+        {
+            if (image[dir + row] == 0x84 && image[dir + row + 1] == 0x8D) yield break;
+            yield return (DecodeMemberName(dir + row), image[dir + row + 10] + Math.Max(0, image[dir + row + 12] - 0x08) * 128);
+        }
+    }
+
+    void WriteDirectoryRow(int offset, string name, int page)
+    {
+        for (int i = 0; i < MemberNameLength; i++)
+            image[offset + i] = (byte)(((i < name.Length ? name[i] : ' ') & 0x7F) | 0x80);
+        image[offset + 10] = (byte)(page % 128);
+        image[offset + 11] = 0;
+        image[offset + 12] = (byte)(0x08 + page / 128);
+        image[offset + 13] = 0x14;
+        image[offset + 14] = 0;
+        image[offset + 15] = 0;
+    }
+
+    string DecodeMemberName(int offset)
+    {
+        var b = new StringBuilder();
+        for (int i = 0; i < MemberNameLength; i++)
+        {
+            char c = (char)(image[offset + i] & 0x7F);
+            if (c != ' ') b.Append(c);
+        }
+        return b.ToString();
+    }
+
+    void AppendSystemUalSector(int sector)
+    {
+        for (int us = 0; us < 6; us++)
+        {
+            int off = imageOffsetForSector(SystemUalSector + us);
+            int start = us == 0 ? 6 : 0;
+            for (int p = start; p <= sectorSize - 3; p += 3)
+            {
+                if (image[off + p] == 0xFF && image[off + p + 1] == 0xFF && image[off + p + 2] == 0xFF)
+                {
+                    image[off + p] = (byte)(sector >> 16);
+                    image[off + p + 1] = (byte)(sector >> 8);
+                    image[off + p + 2] = (byte)sector;
+                    if (p + 5 < sectorSize)
+                    {
+                        image[off + p + 3] = 0xFF;
+                        image[off + p + 4] = 0xFF;
+                        image[off + p + 5] = 0xFF;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+}
+
 public sealed class Cpu6
 {
     public const int AH = 0, AL = 1, BH = 2, BL = 3, RH = 4, RL = 5, DH = 6, DL = 7, EH = 8, EL = 9, SH = 10, SL = 11, GH = 12, GL = 13, HH = 14, HL = 15;
     public const int AX = 0, BX = 1, RT = 2, DX = 3, EX = 4, SP = 5, GX = 6, HX = 7;
     const byte C = 1, N = 2, Z = 4, I = 8;
+
+    const ushort CommandLineBuffer = 0x2F00;
 
     readonly byte[] mem = new byte[65536];
     readonly Queue<byte> terminalInput = new Queue<byte>();
@@ -636,6 +801,7 @@ public sealed class Cpu6
     byte[] floppyImage, hawkImage;
     bool muxInterruptEnabled;
     string floppyPath, hawkPath;
+    CvitFileSystem cvitFs;
     public int FloppyTracks { get; set; } = 77;
     public int FloppyHeads { get; set; } = 2;
     public int FloppySectorsPerTrack { get; set; } = 26;
@@ -692,6 +858,7 @@ public sealed class Cpu6
         hawkPath = path;
         hawkImage = File.Exists(path) ? File.ReadAllBytes(path) : new byte[HawkSectorStride * HawkSectorsPerTrack * HawkHeads * 203];
         if (HawkImageOffset < 0) HawkImageOffset = DetectHawkImageOffset(hawkImage);
+        cvitFs = new CvitFileSystem(hawkImage, HawkImageOffsetForLogicalSector, HawkSectorSize, SaveHawk);
         hawkStatus = 0;
         hawkDriveStatus = 0x3F;
         Console.WriteLine("mounted Hawk drive: {0} ({1} bytes, data offset {2}{3})", path, hawkImage.Length, HawkImageOffset, IsAllZero(hawkImage) ? ", blank" : "");
@@ -970,7 +1137,7 @@ public sealed class Cpu6
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
     ushort ReadDebugAddress(ushort defaultAddr)
     {
-        const ushort line = 0x2F00;
+        const ushort line = CommandLineBuffer;
         ushort addr = 0;
         int digits = 0;
         bool started = false;
@@ -1049,30 +1216,33 @@ public sealed class Cpu6
             }
         }
     }
-    string NormalizeCommandFilename(string spec, string defaultName)
+    (string Member, string Display) ParseCvitFileSpec(string spec, string defaultDisplay, params string[] commandPrefixes)
     {
         string display = RemoveWhitespace(spec).ToUpperInvariant();
-        foreach (string prefix in new[] { "YPE", "TYPE", "ED", "CED" })
+        foreach (string prefix in commandPrefixes)
             if (display.StartsWith(prefix, StringComparison.Ordinal)) { display = display.Substring(prefix.Length); break; }
-        if (display.Length == 0) display = defaultName;
-        int colon = display.LastIndexOf(':');
-        string member = colon >= 0 ? display.Substring(colon + 1) : display;
+        if (display.Length == 0) display = defaultDisplay;
+        string member = display;
+        int colon = member.LastIndexOf(':');
+        if (colon >= 0) member = member.Substring(colon + 1);
         int slash = member.LastIndexOf('/');
         if (slash >= 0) member = member.Substring(slash + 1);
-        if (member.Length == 0) member = defaultName;
-        return member.Length > 10 ? member.Substring(0, 10) : member;
+        if (member.Length == 0)
+        {
+            member = defaultDisplay;
+            int dslash = member.LastIndexOf('/');
+            if (dslash >= 0) member = member.Substring(dslash + 1);
+        }
+        if (member.Length > 10) member = member.Substring(0, 10);
+        return (member, display);
     }
     void TypeSystemMember()
     {
-        if (hawkImage == null) { DebugOut("?NO HAWK\r\n"); return; }
-        string member = NormalizeCommandFilename(ReadDebugLine(), "WELCOME");
-        if (!FindSystemMember(member, out int page, out int capacity)) { DebugOut("?NO FILE\r\n"); return; }
-        int sector = 0x20 + page / 2;
-        int offset = HawkImageOffsetForLogicalSector(sector) + (page & 1) * 200;
-        int end = capacity;
-        while (end > 0 && (hawkImage[offset + end - 1] == 0 || hawkImage[offset + end - 1] == 0x20)) end--;
+        if (cvitFs == null) { DebugOut("?NO HAWK\r\n"); return; }
+        string member = ParseCvitFileSpec(ReadDebugLine(), "WELCOME", "YPE", "TYPE").Member;
+        if (!cvitFs.TryReadTextMember(member, out string text)) { DebugOut("?NO FILE\r\n"); return; }
         DebugOut("\r\n");
-        for (int i = 0; i < end; i++) Write8(0xF201, hawkImage[offset + i]);
+        foreach (char ch in text) Write8(0xF201, ch);
         DebugOut("\r\n");
     }
     void StartCed()
@@ -1087,7 +1257,7 @@ public sealed class Cpu6
     }
     string ReadDebugLine()
     {
-        const ushort line = 0x2F00;
+        const ushort line = CommandLineBuffer;
         var s = new StringBuilder();
         for (int i = 0; i < 32; i++)
         {
@@ -1099,19 +1269,9 @@ public sealed class Cpu6
     }
     void SetCedActiveFile(string spec)
     {
-        if (String.IsNullOrWhiteSpace(spec)) { cedActiveFile = "TEST"; cedActiveDisplay = "/SYSTEM/TEST"; return; }
-        string display = RemoveWhitespace(spec).ToUpperInvariant();
-        if (display.StartsWith("ED", StringComparison.Ordinal)) display = display.Substring(2);
-        if (display.Length == 0) { cedActiveFile = "TEST"; cedActiveDisplay = "/SYSTEM/TEST"; return; }
-        string member = display;
-        int colon = member.LastIndexOf(':');
-        if (colon >= 0) member = member.Substring(colon + 1);
-        int slash = member.LastIndexOf('/');
-        if (slash >= 0) member = member.Substring(slash + 1);
-        if (member.Length == 0) member = "TEST";
-        if (member.Length > 10) member = member.Substring(0, 10);
-        cedActiveFile = member;
-        cedActiveDisplay = display;
+        var parsed = ParseCvitFileSpec(spec, "/SYSTEM/TEST", "ED", "CED");
+        cedActiveFile = parsed.Member;
+        cedActiveDisplay = parsed.Display;
     }
     void CedPrompt() { DebugOut("CED:"); }
     void CedKey(byte raw)
@@ -1186,142 +1346,30 @@ public sealed class Cpu6
     void CedLoadActiveFile()
     {
         cedLines.Clear();
-        if (hawkImage == null) return;
-        if (!FindSystemMember(cedActiveFile, out int page, out int capacity)) return;
-        int sector = 0x20 + page / 2;
-        int offset = HawkImageOffsetForLogicalSector(sector) + (page & 1) * 200;
-        int end = capacity;
-        while (end > 0 && (hawkImage[offset + end - 1] == 0 || hawkImage[offset + end - 1] == 0x20)) end--;
+        if (cvitFs == null || !cvitFs.TryReadTextMember(cedActiveFile, out string text)) return;
         int lineNo = 1;
         var line = new StringBuilder();
-        for (int i = 0; i < end; i++)
+        for (int i = 0; i < text.Length; i++)
         {
-            byte b = (byte)(hawkImage[offset + i] & 0x7F);
-            if (b == '\r' || b == '\n')
+            char ch = text[i];
+            if (ch == '\r' || ch == '\n')
             {
                 if (line.Length != 0) cedLines[lineNo] = line.ToString();
                 lineNo++;
                 line.Clear();
-                if (b == '\r' && i + 1 < end && (hawkImage[offset + i + 1] & 0x7F) == '\n') i++;
+                if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
             }
-            else if (b >= 32 && b < 127) line.Append((char)b);
+            else if (ch >= 32 && ch < 127) line.Append(ch);
         }
         if (line.Length != 0) cedLines[lineNo] = line.ToString();
     }
     void CedWriteActiveFile()
     {
-        if (hawkImage == null) { DebugOut("?NO HAWK\r\n"); return; }
-        if (!FindSystemMember(cedActiveFile, out int page, out int capacity))
-        {
-            if (!CreateSystemMember(cedActiveFile)) { DebugOut("?NO FILE\r\n"); return; }
-            if (!FindSystemMember(cedActiveFile, out page, out capacity)) { DebugOut("?NO FILE\r\n"); return; }
-        }
+        if (cvitFs == null) { DebugOut("?NO HAWK\r\n"); return; }
         var text = new StringBuilder();
         foreach (var kv in cedLines) text.Append(kv.Value).Append("\r\n");
-        byte[] data = Encoding.ASCII.GetBytes(text.ToString());
-        if (data.Length > capacity) { DebugOut("?TOO BIG\r\n"); return; }
-        int sector = 0x20 + page / 2;
-        int offset = HawkImageOffsetForLogicalSector(sector) + (page & 1) * 200;
-        Array.Fill<byte>(hawkImage, 0x20, offset, capacity);
-        Buffer.BlockCopy(data, 0, hawkImage, offset, data.Length);
-        SaveHawk();
+        if (!cvitFs.WriteTextMember(cedActiveFile, text.ToString(), createIfMissing: true, out string error)) { DebugOut(error + "\r\n"); return; }
         DebugOut($"Wrote {cedActiveDisplay}\r\n");
-    }
-    bool CreateSystemMember(string name)
-    {
-        if (hawkImage == null || String.IsNullOrWhiteSpace(name) || name.Length > 10) return false;
-        if (FindSystemMember(name, out _, out _)) return true;
-        int dir = HawkImageOffsetForLogicalSector(0x20);
-        if (dir < 0 || dir + 400 > hawkImage.Length) return false;
-        int term = -1;
-        for (int row = 16; row < 200; row += 16)
-        {
-            if (hawkImage[dir + row] == 0x84 && hawkImage[dir + row + 1] == 0x8D) { term = row; break; }
-        }
-        if (term < 0 || term + 17 >= 200) return false;
-        int ual = HawkImageOffsetForLogicalSector(0x12);
-        if (ual < 0 || ual + 400 > hawkImage.Length) return false;
-        int nsec = ((hawkImage[ual] << 8) | hawkImage[ual + 1]) + 1;
-        int newSector = 0x20 + nsec;
-        int newPage = nsec * 2;
-        int newOff = HawkImageOffsetForLogicalSector(newSector);
-        if (newOff < 0 || newOff + HawkSectorSize > hawkImage.Length) return false;
-
-        for (int i = 0; i < 10; i++)
-            hawkImage[dir + term + i] = (byte)(((i < name.Length ? name[i] : ' ') & 0x7F) | 0x80);
-        hawkImage[dir + term + 10] = (byte)(newPage % 128);
-        hawkImage[dir + term + 11] = 0;
-        hawkImage[dir + term + 12] = (byte)(0x08 + newPage / 128);
-        hawkImage[dir + term + 13] = 0x14;
-        hawkImage[dir + term + 14] = 0;
-        hawkImage[dir + term + 15] = 0;
-        hawkImage[dir + term + 16] = 0x84;
-        hawkImage[dir + term + 17] = 0x8D;
-
-        Array.Fill<byte>(hawkImage, 0x20, newOff, HawkSectorSize);
-        hawkImage[ual] = (byte)(nsec >> 8);
-        hawkImage[ual + 1] = (byte)nsec;
-        AppendSystemUalSector(newSector);
-        SaveHawk();
-        return true;
-    }
-    void AppendSystemUalSector(int sector)
-    {
-        for (int us = 0; us < 6; us++)
-        {
-            int off = HawkImageOffsetForLogicalSector(0x12 + us);
-            int start = us == 0 ? 6 : 0;
-            for (int p = start; p <= HawkSectorSize - 3; p += 3)
-            {
-                if (hawkImage[off + p] == 0xFF && hawkImage[off + p + 1] == 0xFF && hawkImage[off + p + 2] == 0xFF)
-                {
-                    hawkImage[off + p] = (byte)(sector >> 16);
-                    hawkImage[off + p + 1] = (byte)(sector >> 8);
-                    hawkImage[off + p + 2] = (byte)sector;
-                    if (p + 5 < HawkSectorSize)
-                    {
-                        hawkImage[off + p + 3] = 0xFF;
-                        hawkImage[off + p + 4] = 0xFF;
-                        hawkImage[off + p + 5] = 0xFF;
-                    }
-                    return;
-                }
-            }
-        }
-    }
-    bool FindSystemMember(string name, out int page, out int capacity)
-    {
-        page = 0; capacity = 0;
-        int dir = HawkImageOffsetForLogicalSector(0x20);
-        if (dir < 0 || dir + 400 > hawkImage.Length) return false;
-        int found = -1, next = Int32.MaxValue;
-        for (int row = 16; row < 400; row += 16)
-        {
-            if (hawkImage[dir + row] == 0x84 && hawkImage[dir + row + 1] == 0x8D) break;
-            string n = DecodeMemberName(dir + row);
-            int p = hawkImage[dir + row + 10] + Math.Max(0, hawkImage[dir + row + 12] - 0x08) * 128;
-            if (String.Equals(n, name, StringComparison.OrdinalIgnoreCase)) found = p;
-        }
-        if (found < 0) return false;
-        for (int row = 16; row < 400; row += 16)
-        {
-            if (hawkImage[dir + row] == 0x84 && hawkImage[dir + row + 1] == 0x8D) break;
-            int p = hawkImage[dir + row + 10] + Math.Max(0, hawkImage[dir + row + 12] - 0x08) * 128;
-            if (p > found && p < next) next = p;
-        }
-        page = found;
-        capacity = (next == Int32.MaxValue ? 2 : next - found) * 200;
-        return capacity > 0;
-    }
-    string DecodeMemberName(int offset)
-    {
-        var b = new StringBuilder();
-        for (int i = 0; i < 10; i++)
-        {
-            char c = (char)(hawkImage[offset + i] & 0x7F);
-            if (c != ' ') b.Append(c);
-        }
-        return b.ToString();
     }
     void DebugRegs()
     {
