@@ -135,7 +135,7 @@ def build_command(welcome_sector):
     a.label("cmd_debug")
     a.jsr_abs("drain_line")
     a.print("\r\ncvit DEBUG V0.1\r\n")
-    a.print("COMMANDS: R D U B S A Q\r\n")
+    a.print("COMMANDS: R X D U B S A Q\r\n")
     a.label("debug_prompt")
     a.print("\r\n:")
     a.jsr_abs("getc_echo")
@@ -144,7 +144,8 @@ def build_command(welcome_sector):
     a.label("debug_not_blank")
     cmp_al('Q', "debug_quit"); cmp_al('q', "debug_quit")
     cmp_al('R', "debug_regs"); cmp_al('r', "debug_regs")
-    cmp_al('D', "debug_dump"); cmp_al('d', "debug_dump")
+    cmp_al('X', "debug_dump"); cmp_al('x', "debug_dump")
+    cmp_al('D', "debug_deposit"); cmp_al('d', "debug_deposit")
     cmp_al('U', "debug_unasm"); cmp_al('u', "debug_unasm")
     cmp_al('B', "debug_break"); cmp_al('b', "debug_break")
     cmp_al('S', "debug_step"); cmp_al('s', "debug_step")
@@ -159,11 +160,15 @@ def build_command(welcome_sector):
     a.jmp_abs("debug_prompt")
 
     a.label("debug_dump")
-    a.svc(0x42)              # Emulator-assisted: consumes optional " $NNNN".
+    a.jsr_abs("debug_line_dump")
     a.jmp_abs("debug_prompt")
 
     a.label("debug_unasm")
-    a.svc(0x43)              # Emulator-assisted: consumes optional " $NNNN".
+    a.jsr_abs("debug_line_unasm")
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_deposit")
+    a.jsr_abs("debug_line_deposit")
     a.jmp_abs("debug_prompt")
 
     a.label("debug_break")
@@ -203,6 +208,25 @@ def build_command(welcome_sector):
     a.label("cmd_quit")
     a.jsr_abs("drain_line")
     a.raw(0x71, 0x08, 0x09)  # JMP absolute kernel quit vector.
+
+    def debug_line_reader(label, svc):
+        buf = 0x2F00
+        end = f"{label}_end"
+        a.label(label)
+        for i in range(8):
+            a.ldab_i(0x0D).stab_d(buf + i)
+        for i in range(8):
+            a.jsr_abs("getc_echo")
+            a.stab_d(buf + i)
+            a.ldbb_i(0x0D).sabb().bz(end)
+        a.jsr_abs("drain_line")
+        a.label(end)
+        a.svc(svc)
+        a.rsr()
+
+    debug_line_reader("debug_line_dump", 0x42)
+    debug_line_reader("debug_line_unasm", 0x43)
+    debug_line_reader("debug_line_deposit", 0x44)
 
     a.label("drain_line")
     a.jsr_abs("getc_echo")

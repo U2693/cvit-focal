@@ -119,6 +119,7 @@ public sealed class Tui
             int c = ch;
             if (c >= 0x80) c &= 0x7F; // Centurion terminal strings often carry the high bit.
             if (c == '\r') return;
+            if (c == '\b') { if (term.Length > 0) term.Length--; return; }
             if (c == '\f') { term.Clear(); return; }
             if (term.Length > 4096) term.Remove(0, 1024);
             term.Append((char)c);
@@ -616,6 +617,9 @@ public sealed class Cpu6
     readonly byte[] mem = new byte[65536];
     readonly Queue<byte> terminalInput = new Queue<byte>();
     byte flags, ipl, op;
+    bool debugDepositActive;
+    ushort debugDepositAddr;
+    readonly StringBuilder debugDepositInput = new StringBuilder();
     readonly Stack<InterruptFrame> interruptStack = new Stack<InterruptFrame>();
     ushort dmaAddr, dmaCount;
     byte dmaMode;
@@ -741,6 +745,7 @@ public sealed class Cpu6
                 int c = b;
                 if (c >= 0x80) c &= 0x7F; // keep headless boot logs readable too
                 if (c == '\r') return;
+                if (c == '\b') { Console.Write("\b \b"); return; }
                 if (c == '\f') Console.WriteLine();
                 else Console.Write((char)c);
             }
@@ -787,6 +792,11 @@ public sealed class Cpu6
 
     public void Step()
     {
+        if (debugDepositActive)
+        {
+            if (terminalInput.Count != 0) DebugDepositKey(terminalInput.Dequeue());
+            return;
+        }
         ServiceInterrupts();
         ushort oldpc = PC; op = Fetch();
         if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX));
@@ -942,20 +952,20 @@ public sealed class Cpu6
         if (svc == 0x41) { DebugRegs(); return; }
         if (svc == 0x42) { DebugDump(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x43) { DebugDisasm(ReadDebugAddress(0x0800)); return; }
+        if (svc == 0x44) { StartDebugDeposit(ReadDebugAddress(0x0800)); return; }
         Unknown();
     }
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
     ushort ReadDebugAddress(ushort defaultAddr)
     {
+        const ushort line = 0x2F00;
         ushort addr = 0;
         int digits = 0;
         bool started = false;
-        while (terminalInput.Count != 0)
+        for (int i = 0; i < 8; i++)
         {
-            byte raw = terminalInput.Dequeue();
-            byte ch = (byte)(raw & 0x7F);
-            if (ch == '\r' || ch == '\n') { DebugOut("\r\n"); break; }
-            Write8(0xF201, ch);
+            byte ch = (byte)(mem[(ushort)(line + i)] & 0x7F);
+            if (ch == '\r' || ch == '\n') break;
             if (!started && (ch == ' ' || ch == '\t')) continue;
             if (!started && ch == '$') { started = true; continue; }
             int v = HexValue(ch);
@@ -974,6 +984,58 @@ public sealed class Cpu6
         if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
         if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
         return -1;
+    }
+    void StartDebugDeposit(ushort addr)
+    {
+        debugDepositActive = true;
+        debugDepositAddr = addr;
+        debugDepositInput.Clear();
+        DebugOut("Use '.' to end.\r\n");
+        DebugDepositPrompt();
+    }
+    void DebugDepositPrompt()
+    {
+        DebugOut($"{debugDepositAddr:X4}: {mem[debugDepositAddr]:X2} __\b\b");
+    }
+    void DebugDepositKey(byte raw)
+    {
+        byte ch = (byte)(raw & 0x7F);
+        if (ch == '\n') return;
+        if (ch == '\r')
+        {
+            string s = debugDepositInput.ToString().Trim();
+            DebugOut("\r\n");
+            if (s == ".") { debugDepositActive = false; return; }
+            if (s.Length > 0)
+            {
+                int v = 0, digits = 0;
+                foreach (char c in s)
+                {
+                    int h = HexValue((byte)c);
+                    if (h < 0 || digits >= 2) { digits = -1; break; }
+                    v = (v << 4) | h;
+                    digits++;
+                }
+                if (digits > 0) { mem[debugDepositAddr] = (byte)v; debugDepositAddr++; }
+                else DebugOut("?HEX\r\n");
+            }
+            debugDepositInput.Clear();
+            DebugDepositPrompt();
+            return;
+        }
+        if (ch == 0x08 || ch == 0x7F)
+        {
+            if (debugDepositInput.Length > 0) { debugDepositInput.Length--; DebugOut("\b_\b"); }
+            return;
+        }
+        if (ch == '.' || HexValue(ch) >= 0)
+        {
+            if (debugDepositInput.Length < 2 || (ch == '.' && debugDepositInput.Length == 0))
+            {
+                debugDepositInput.Append((char)ch);
+                Write8(0xF201, ch);
+            }
+        }
     }
     void DebugRegs()
     {
@@ -1572,5 +1634,9 @@ public sealed class Cpu6
     public int HawkCylinder { get { return (hawkSectorAddress >> 5) & 0x7FF; } }
     public int HawkHead { get { return (hawkSectorAddress >> 4) & 1; } }
     public int HawkSector { get { return hawkSectorAddress & 0x0F; } }
-    public void QueueTerminalInput(byte b) { terminalInput.Enqueue(b); }
+    public void QueueTerminalInput(byte b)
+    {
+        if (debugDepositActive) DebugDepositKey(b);
+        else terminalInput.Enqueue(b);
+    }
 }

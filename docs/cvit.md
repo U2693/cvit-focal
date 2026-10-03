@@ -81,4 +81,4 @@ type       byte    ; SYS/BIN/TXT/BAS/DIR equivalent
 5. `TYPE WELCOME` demo: a text member is read from Hawk and displayed on the console. **Done for one-sector `SYSTEM/WELCOME`.**
 6. Load and run `SYSTEM/COMMAND`. **Done:** KERNEL loads COMMAND at `0x3000` and jumps to it.
 7. Interactive COMMAND loop. **Started:** supports `CAT`, `TYPE WELCOME`, `HELP`, `.STA`, `.DEBUG`, and `QUIT`.
-8. Resident debugger. **Started:** `.DEBUG` enters a monitor shell. `R` displays registers, `D $NNNN` dumps memory, `U $NNNN` disassembles memory, and placeholders remain for breakpoints, single-step, mini-assembler, and quit.
+8. Resident debugger. **Started:** `.DEBUG` enters a monitor shell. `R` displays registers, `X $NNNN` examines/dumps memory, `DNNNN` deposits bytes until `.`, `U $NNNN` disassembles memory, and placeholders remain for breakpoints, single-step, mini-assembler, and quit.
