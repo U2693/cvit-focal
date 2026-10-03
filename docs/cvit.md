@@ -37,8 +37,27 @@ stable API without knowing internal addresses:
 | `0830` | `get_prefix` |
 
 For now, KERNEL provides the boot/banner and COMMAND loader path. The `syscall`
-vector also services `SVC $40` as a console `putc` with the character in `AL`.
-Unimplemented vectors print `?UNIMPL` and return during bring-up.
+vector is entered by `SVC $40`; `AX` is the function selector and `BX` points to
+a function-specific control block. Unimplemented vectors print `?UNIMPL` and
+return during bring-up.
+
+## System call ABI
+
+Programs call cvit services with:
+
+```text
+AX      function selector
+BX      control block pointer
+SVC $40
+```
+
+Initial selectors:
+
+| AX | Function | Control block |
+| --- | --- | --- |
+| `0001` | console putc | `CB+0`: byte character, displayed on the current terminal |
+
+Unknown selectors currently print `?SVC` and return.
 
 ## User model
 

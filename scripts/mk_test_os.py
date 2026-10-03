@@ -303,7 +303,11 @@ def build_kernel(command_sector, command_sectors=1):
     a.print("\r\nBYE\r\n").hlt().jmp("quit")
 
     a.label("syscall")
-    a.stab_d(0xF201).rsr()   # SVC $40 / JSR $0806: console putc from AL.
+    a.stb_d(0x2EFE)          # SVC $40 ABI: AX=function, BX=control block pointer.
+    a.ldbb_i(1).sabb().bnz("syscall_unimpl")
+    a.ldb_d(0x2EFE).ldab_bx(0).stab_d(0xF201).rsr()  # function 1: putc, CB+0 = char.
+    a.label("syscall_unimpl")
+    a.ldb_d(0x2EFE).print("\r\n?SVC\r\n").rsr()
 
     a.label("load_command")
     for i in range(command_sectors):
