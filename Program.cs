@@ -64,7 +64,7 @@ public static class BiscvitProgram
         Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image] [--boot-floppy] [--run] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
-        Console.WriteLine("TUI keys: Ctrl-Tab, Alt-=, or Esc = toggle terminal/TUI focus; in TUI focus: r run/pause, s step, n 100 steps, c clear HALT, Ctrl-R reset CPU, b breakpoint, q/F10 quit");
+        Console.WriteLine("TUI keys: terminal focus is always active; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
     }
     static void QueueText(Cpu6 cpu, string text)
     {
@@ -100,13 +100,13 @@ public sealed class Tui
     ushort resetPc;
     bool running;
     bool haveLast;
-    bool terminalFocus = true;
-    bool escapePrefix;
     bool followPc = true;
     int stepsPerTick = 250;
     int refreshMs = 100;
     long steps;
     string status = "ready";
+    string[] frame = Array.Empty<string>();
+    int frameWidth, frameHeight;
 
     public Tui(Cpu6 cpu)
     {
@@ -149,7 +149,6 @@ public sealed class Tui
                 if (!Console.KeyAvailable) { System.Threading.Thread.Sleep(running ? 1 : 25); continue; }
                 var k = Console.ReadKey(true);
                 if (k.Key == ConsoleKey.F10) break;
-                if (!terminalFocus && k.Key == ConsoleKey.Q) break;
                 Handle(k); Draw();
             }
         }
@@ -166,67 +165,41 @@ public sealed class Tui
     {
         try
         {
-            if (escapePrefix)
-            {
-                escapePrefix = false;
-                if (k.KeyChar == '=') { ToggleTerminalFocus(); return; }
-                cpu.QueueTerminalInput(0x1B);
-            }
-            if ((k.Key == ConsoleKey.Tab && (k.Modifiers & ConsoleModifiers.Control) != 0) ||
-                (k.KeyChar == '=' && (k.Modifiers & ConsoleModifiers.Alt) != 0))
-            {
-                ToggleTerminalFocus();
-                return;
-            }
-            if (k.Key == ConsoleKey.Escape) { escapePrefix = true; status = "escape prefix"; return; }
-            if (terminalFocus)
-            {
-                SendTerminalKey(k);
-                return;
-            }
-            if (k.KeyChar == '[') { refreshMs = Math.Min(1000, refreshMs + 25); status = "refresh " + refreshMs + "ms"; return; }
-            if (k.KeyChar == ']') { refreshMs = Math.Max(25, refreshMs - 25); status = "refresh " + refreshMs + "ms"; return; }
             switch (k.Key)
             {
-                case ConsoleKey.S: running = false; if (!cpu.Halted) StepOne(); status = "stepped"; if (followPc) memAt = (ushort)(cpu.PC & 0xFFF0); break;
-                case ConsoleKey.N: for (int i = 0; i < 100 && !cpu.Halted; i++) if (!StepOne()) break; status = "+100 steps"; if (followPc) memAt = (ushort)(cpu.PC & 0xFFF0); break;
-                case ConsoleKey.C: cpu.ClearHalt(); status = "HALT cleared"; break;
-                case ConsoleKey.R:
-                    if ((k.Modifiers & ConsoleModifiers.Control) != 0) { ResetCpu(); break; }
+                case ConsoleKey.F1:
                     if (cpu.Halted) cpu.ClearHalt();
-                    running = !running; status = running ? "running" : "paused"; break;
-                case ConsoleKey.Add:
-                case ConsoleKey.OemPlus: stepsPerTick = Math.Min(50000, stepsPerTick * 2); status = "speed " + stepsPerTick + "/tick"; break;
-                case ConsoleKey.Subtract:
-                case ConsoleKey.OemMinus: stepsPerTick = Math.Max(1, stepsPerTick / 2); status = "speed " + stepsPerTick + "/tick"; break;
-                case ConsoleKey.Oem4: refreshMs = Math.Min(1000, refreshMs + 25); status = "refresh " + refreshMs + "ms"; break;
-                case ConsoleKey.Oem6: refreshMs = Math.Max(25, refreshMs - 25); status = "refresh " + refreshMs + "ms"; break;
-                case ConsoleKey.UpArrow: followPc = false; memAt -= 16; break;
-                case ConsoleKey.DownArrow: followPc = false; memAt += 16; break;
-                case ConsoleKey.PageUp: followPc = false; memAt -= 256; break;
-                case ConsoleKey.PageDown: followPc = false; memAt += 256; break;
-                case ConsoleKey.Home: followPc = true; memAt = (ushort)(cpu.PC & 0xFFF0); status = "following PC"; break;
-                case ConsoleKey.G: { string s = Prompt("goto hex address"); if (s.Length > 0) { memAt = BiscvitProgram.Hex16(s); followPc = false; } break; }
-                case ConsoleKey.P: { string s = Prompt("set PC"); if (s.Length > 0) { cpu.PC = BiscvitProgram.Hex16(s); resetPc = cpu.PC; followPc = true; } break; }
-                case ConsoleKey.B: { string s = Prompt("breakpoint hex (blank clears)"); cpu.Breakpoint = s.Length == 0 ? -1 : BiscvitProgram.Hex16(s); break; }
-                case ConsoleKey.L:
-                    string f = Prompt("load binary file"); if (f.Length == 0) break;
-                    string a = Prompt("load address"); if (a.Length == 0) break;
-                    cpu.Load(File.ReadAllBytes(f), BiscvitProgram.Hex16(a)); status = "loaded " + f; break;
-                case ConsoleKey.M:
-                    EditMemory(); break;
+                    running = !running;
+                    status = running ? "running" : "paused";
+                    return;
+                case ConsoleKey.F2:
+                    running = false;
+                    if (!cpu.Halted) StepOne();
+                    status = "stepped";
+                    return;
+                case ConsoleKey.F3:
+                    running = false;
+                    for (int i = 0; i < 100 && !cpu.Halted; i++) if (!StepOne()) break;
+                    status = "+100 steps";
+                    return;
+                case ConsoleKey.F4:
+                    cpu.ClearHalt();
+                    status = "HALT cleared";
+                    return;
+                case ConsoleKey.F5:
+                    ResetCpu();
+                    return;
+                case ConsoleKey.F6:
+                    string s = Prompt("breakpoint hex (blank clears)");
+                    cpu.Breakpoint = s.Length == 0 ? -1 : BiscvitProgram.Hex16(s);
+                    status = cpu.Breakpoint < 0 ? "breakpoint cleared" : "breakpoint " + cpu.Breakpoint.ToString("X4");
+                    return;
                 default:
                     SendTerminalKey(k);
-                    break;
+                    return;
             }
         }
         catch (Exception ex) { running = false; status = ex.Message; }
-    }
-
-    void ToggleTerminalFocus()
-    {
-        terminalFocus = !terminalFocus;
-        status = terminalFocus ? "terminal focus" : "TUI focus";
     }
 
     void ResetCpu()
@@ -297,7 +270,7 @@ public sealed class Tui
     {
         int w = SafeWidth(), h = SafeHeight();
         if (w < 40 || h < 5) return;
-        try { Console.Clear(); } catch { }
+        EnsureFrame(w, h);
         Console.SetCursorPosition(0, 0);
         Console.ForegroundColor = ConsoleColor.White; Console.BackgroundColor = ConsoleColor.DarkBlue;
         Put(0, 0, Pad($" biscvit console  PC {cpu.PC:X4}  {(cpu.Halted ? "HALT" : running ? "RUN" : "PAUSE")}  {status}", w));
@@ -310,18 +283,16 @@ public sealed class Tui
 
     void DrawButtons(int x, int y, int width)
     {
-        string focus = terminalFocus ? "TERM" : "TUI";
         string run = running ? "Pause" : "Run";
         string brk = cpu.Breakpoint < 0 ? "BRK ----" : $"BRK {cpu.Breakpoint:X4}";
         string[] buttons = new[]
         {
-            $"[R {run}]",
-            "[S Step]",
-            "[N +100]",
-            "[C ClrHalt]",
-            "[Ctrl-R Reset]",
-            $"[Ctrl-Tab {focus}]",
-            $"[{brk}]",
+            $"[F1 {run}]",
+            "[F2 Step]",
+            "[F3 +100]",
+            "[F4 ClrHalt]",
+            "[F5 Reset]",
+            $"[F6 {brk}]",
             "[F10 Quit]"
         };
         string line = string.Join(" ", buttons);
@@ -555,7 +526,7 @@ public sealed class Tui
     void DrawTerminal(int x, int y, int width, int height)
     {
         if (width <= 0 || height <= 0) return;
-        Put(x, y-1, BoxTitle(terminalFocus ? " Terminal MMIO F201 [FOCUS] " : " Terminal MMIO F201 ", width));
+        Put(x, y-1, BoxTitle(" Console MMIO F201 ", width));
         string[] lines = term.ToString().Replace("\r", "").Split('\n');
         int start = Math.Max(0, lines.Length - height);
         for (int i = 0; i < height; i++)
@@ -604,18 +575,36 @@ public sealed class Tui
     static int SafeWidth() { try { return Math.Max(1, Console.WindowWidth); } catch { return 80; } }
     static int SafeHeight() { try { return Math.Max(1, Console.WindowHeight); } catch { return 24; } }
     static string Pad(string s, int width) { if (width <= 0) return ""; if (s.Length > width) return s.Substring(0, width); return s + new string(' ', width - s.Length); }
-    static void Put(int x, int y, string s)
+    void EnsureFrame(int w, int h)
+    {
+        if (frameWidth == w && frameHeight == h && frame.Length == h) return;
+        frameWidth = w;
+        frameHeight = h;
+        frame = new string[h];
+        for (int i = 0; i < h; i++) frame[i] = new string('\0', w);
+        try { Console.Clear(); } catch { }
+    }
+    void InvalidateFrameRow(int y)
+    {
+        if (y >= 0 && y < frame.Length) frame[y] = new string('\0', frameWidth);
+    }
+    void Put(int x, int y, string s)
     {
         int w = SafeWidth(), h = SafeHeight();
         if (x < 0 || y < 0 || x >= w || y >= h) return;
-        try { Console.SetCursorPosition(x, y); Console.Write(Pad(s, Math.Min(s.Length, w - x))); } catch { }
+        string text = Pad(s, Math.Min(s.Length, w - x));
+        if (frame.Length == h && y < frame.Length && frame[y].Length == w)
+        {
+            string old = frame[y].Substring(x, text.Length);
+            if (old == text) return;
+            var row = new StringBuilder(frame[y]);
+            row.Remove(x, text.Length);
+            row.Insert(x, text);
+            frame[y] = row.ToString();
+        }
+        try { Console.SetCursorPosition(x, y); Console.Write(text); } catch { }
     }
-    static void PutRaw(int x, int y, string s)
-    {
-        int w = SafeWidth(), h = SafeHeight();
-        if (x < 0 || y < 0 || x >= w || y >= h) return;
-        try { Console.SetCursorPosition(x, y); Console.Write(Pad(s, Math.Min(s.Length, w - x))); } catch { }
-    }
+    void PutRaw(int x, int y, string s) => Put(x, y, s);
 }
 
 public sealed class Cpu6

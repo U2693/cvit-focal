@@ -21,4 +21,4 @@ Experimental: `--ffc-linear-experimental` makes the FFC shim treat track/sector 
 
 Devices: MUX terminal status/data at `F200/F201`, simple floppy registers at `F140-F145`, Hawk drive registers at `F140-F148` when `--hawk` is mounted, and a bootstrap-compatible FFC shim at `F800/F801` supporting command DMA (`43`) and execute (`45`).
 
-TUI: the default view is a console screen with a button row. `Ctrl-Tab`, `Alt-=` or `Esc =` toggle terminal/TUI focus. In TUI focus: `r` run/pause, `s` step, `n` step 100, `c` clear HALT, `Ctrl-R` reset CPU, `b` breakpoint, `q`/F10 quit. Writes to MMIO `F201` appear in the console; typed printable keys feed reads from `F201`.
+TUI: the view is a console screen with a function-key button row. Terminal focus is always active; typed printable keys feed reads from `F201`. Buttons: `F1` run/pause, `F2` step, `F3` step 100, `F4` clear HALT, `F5` reset CPU, `F6` breakpoint, `F10` quit. Writes to MMIO `F201` appear in the console.
