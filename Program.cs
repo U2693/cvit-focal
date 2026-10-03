@@ -952,7 +952,94 @@ public sealed class Cpu6
             PC = 0x0806;
             return;
         }
+        if (svc == 0x41) { DebugRegs(); return; }
+        if (svc == 0x42) { DebugDump(ReadDebugAddress(0x0800)); return; }
+        if (svc == 0x43) { DebugDisasm(ReadDebugAddress(0x0800)); return; }
         Unknown();
+    }
+    void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
+    ushort ReadDebugAddress(ushort defaultAddr)
+    {
+        ushort addr = 0;
+        int digits = 0;
+        bool started = false;
+        while (terminalInput.Count != 0)
+        {
+            byte raw = terminalInput.Dequeue();
+            byte ch = (byte)(raw & 0x7F);
+            if (ch == '\r' || ch == '\n') { DebugOut("\r\n"); break; }
+            Write8(0xF201, ch);
+            if (!started && (ch == ' ' || ch == '\t')) continue;
+            if (!started && ch == '$') { started = true; continue; }
+            int v = HexValue(ch);
+            if (v >= 0 && digits < 4)
+            {
+                started = true;
+                addr = (ushort)((addr << 4) | v);
+                digits++;
+            }
+        }
+        return digits == 0 ? defaultAddr : addr;
+    }
+    int HexValue(byte ch)
+    {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+        if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+        return -1;
+    }
+    void DebugRegs()
+    {
+        DebugOut($"PC={PC:X4} FLAGS={FlagString(),-4} IPL={ipl:X1} AX={RegPair(AX):X4} BX={RegPair(BX):X4} RT={RegPair(RT):X4} DX={RegPair(DX):X4}\r\n");
+        DebugOut($"EX={RegPair(EX):X4} SP={RegPair(SP):X4} GX={RegPair(GX):X4} HX={RegPair(HX):X4}\r\n");
+    }
+    void DebugDump(ushort a)
+    {
+        for (int row = 0; row < 4; row++)
+        {
+            ushort baseAddr = (ushort)(a + row * 16);
+            var sb = new StringBuilder();
+            sb.Append($"{baseAddr:X4}:");
+            for (int i = 0; i < 16; i++) sb.Append($" {mem[(ushort)(baseAddr + i)]:X2}");
+            sb.Append("  ");
+            for (int i = 0; i < 16; i++) { byte b = mem[(ushort)(baseAddr + i)]; sb.Append(b >= 32 && b < 127 ? (char)b : '.'); }
+            sb.Append("\r\n");
+            DebugOut(sb.ToString());
+        }
+    }
+    void DebugDisasm(ushort a)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            string text = MiniDisasm(a, out int len);
+            DebugOut(text + "\r\n");
+            a = (ushort)(a + len);
+        }
+    }
+    string MiniDisasm(ushort pc, out int len)
+    {
+        byte op = mem[pc], b1 = mem[(ushort)(pc + 1)], b2 = mem[(ushort)(pc + 2)];
+        len = 1;
+        switch (op)
+        {
+            case 0x00: return $"{pc:X4}: 00       HLT";
+            case 0x01: return $"{pc:X4}: 01       NOP";
+            case 0x09: return $"{pc:X4}: 09       RSR";
+            case 0x66: len = 2; return $"{pc:X4}: 66 {b1:X2}    SVC ${b1:X2}";
+            case 0x71: len = 3; return $"{pc:X4}: 71 {b1:X2} {b2:X2} JMP ${((b1 << 8) | b2):X4}";
+            case 0x79: len = 3; return $"{pc:X4}: 79 {b1:X2} {b2:X2} JSR ${((b1 << 8) | b2):X4}";
+            case 0x80: len = 2; return $"{pc:X4}: 80 {b1:X2}    LDAB #${b1:X2}";
+            case 0x81: len = 3; return $"{pc:X4}: 81 {b1:X2} {b2:X2} LDAB ${((b1 << 8) | b2):X4}";
+            case 0x90: len = 3; return $"{pc:X4}: 90 {b1:X2} {b2:X2} LDA #${((b1 << 8) | b2):X4}";
+            case 0x91: len = 3; return $"{pc:X4}: 91 {b1:X2} {b2:X2} LDA ${((b1 << 8) | b2):X4}";
+            case 0xA1: len = 3; return $"{pc:X4}: A1 {b1:X2} {b2:X2} STAB ${((b1 << 8) | b2):X4}";
+            case 0xB1: len = 3; return $"{pc:X4}: B1 {b1:X2} {b2:X2} STA ${((b1 << 8) | b2):X4}";
+            case 0xC0: len = 2; return $"{pc:X4}: C0 {b1:X2}    LDBB #${b1:X2}";
+            case 0xD0: len = 3; return $"{pc:X4}: D0 {b1:X2} {b2:X2} LDB #${((b1 << 8) | b2):X4}";
+            case 0xE1: len = 3; return $"{pc:X4}: E1 {b1:X2} {b2:X2} STBB ${((b1 << 8) | b2):X4}";
+            case 0xF1: len = 3; return $"{pc:X4}: F1 {b1:X2} {b2:X2} STB ${((b1 << 8) | b2):X4}";
+            default: return $"{pc:X4}: {op:X2}       DB ${op:X2}";
+        }
     }
     void Jump()
     {

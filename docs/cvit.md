@@ -80,4 +80,5 @@ type       byte    ; SYS/BIN/TXT/BAS/DIR equivalent
 4. Read `SYSTEM` library and list members with `CAT`. **Started:** current stub reads page 0 and prints rows until the `84 8D` terminator.
 5. `TYPE WELCOME` demo: a text member is read from Hawk and displayed on the console. **Done for one-sector `SYSTEM/WELCOME`.**
 6. Load and run `SYSTEM/COMMAND`. **Done:** KERNEL loads COMMAND at `0x3000` and jumps to it.
-7. Interactive COMMAND loop. **Started:** supports `CAT`, `TYPE WELCOME`, `HELP`, and `QUIT`.
+7. Interactive COMMAND loop. **Started:** supports `CAT`, `TYPE WELCOME`, `HELP`, `.STA`, `.DEBUG`, and `QUIT`.
+8. Resident debugger. **Started:** `.DEBUG` enters a monitor shell. `R` displays registers, `D $NNNN` dumps memory, `U $NNNN` disassembles memory, and placeholders remain for breakpoints, single-step, mini-assembler, and quit.

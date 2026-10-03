@@ -107,13 +107,14 @@ def build_command(welcome_sector):
     a.label("cmd_dot")
     a.jsr_abs("getc_echo")
     cmp_al('S', "cmd_sta"); cmp_al('s', "cmd_sta")
+    cmp_al('D', "cmd_debug"); cmp_al('d', "cmd_debug")
     a.jsr_abs("drain_line")
     a.print("?SYNTAX\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_help")
     a.jsr_abs("drain_line")
-    a.print("COMMANDS: CAT, TYPE WELCOME, HELP, .STA, QUIT\r\n")
+    a.print("COMMANDS: CAT, TYPE WELCOME, HELP, .STA, .DEBUG, QUIT\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_sta")
@@ -129,6 +130,60 @@ def build_command(welcome_sector):
     a.print(" T1:  MUX1        OFFLINE\r\n")
     a.print(" T2:  MUX2        OFFLINE\r\n")
     a.print(" T3:  MUX3        OFFLINE\r\n")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_debug")
+    a.jsr_abs("drain_line")
+    a.print("\r\ncvit DEBUG V0.1\r\n")
+    a.print("COMMANDS: R D U B S A Q\r\n")
+    a.label("debug_prompt")
+    a.print("\r\n:")
+    a.jsr_abs("getc_echo")
+    a.ldbb_i(0x0D).sabb().bnz("debug_not_blank")
+    a.jmp_abs("debug_prompt")
+    a.label("debug_not_blank")
+    cmp_al('Q', "debug_quit"); cmp_al('q', "debug_quit")
+    cmp_al('R', "debug_regs"); cmp_al('r', "debug_regs")
+    cmp_al('D', "debug_dump"); cmp_al('d', "debug_dump")
+    cmp_al('U', "debug_unasm"); cmp_al('u', "debug_unasm")
+    cmp_al('B', "debug_break"); cmp_al('b', "debug_break")
+    cmp_al('S', "debug_step"); cmp_al('s', "debug_step")
+    cmp_al('A', "debug_asm"); cmp_al('a', "debug_asm")
+    a.jsr_abs("drain_line")
+    a.print("?DEBUG\r\n")
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_regs")
+    a.jsr_abs("drain_line")
+    a.svc(0x41)
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_dump")
+    a.svc(0x42)              # Emulator-assisted: consumes optional " $NNNN".
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_unasm")
+    a.svc(0x43)              # Emulator-assisted: consumes optional " $NNNN".
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_break")
+    a.jsr_abs("drain_line")
+    a.print("BREAKPOINTS TODO\r\n")
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_step")
+    a.jsr_abs("drain_line")
+    a.print("SINGLE STEP TODO\r\n")
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_asm")
+    a.jsr_abs("drain_line")
+    a.print("MINI-ASSEMBLER TODO\r\n")
+    a.jmp_abs("debug_prompt")
+
+    a.label("debug_quit")
+    a.jsr_abs("drain_line")
+    a.print("LEAVING DEBUG\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_cat")
