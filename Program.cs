@@ -620,6 +620,11 @@ public sealed class Cpu6
     bool debugDepositActive;
     ushort debugDepositAddr;
     readonly StringBuilder debugDepositInput = new StringBuilder();
+    bool cedActive;
+    readonly StringBuilder cedInput = new StringBuilder();
+    readonly SortedDictionary<int, string> cedLines = new SortedDictionary<int, string>();
+    string cedActiveFile = "TEST";
+    string cedActiveDisplay = "/SYSTEM/TEST";
     readonly Stack<InterruptFrame> interruptStack = new Stack<InterruptFrame>();
     ushort dmaAddr, dmaCount;
     byte dmaMode;
@@ -792,9 +797,14 @@ public sealed class Cpu6
 
     public void Step()
     {
-        if (debugDepositActive)
+        if (debugDepositActive || cedActive)
         {
-            if (terminalInput.Count != 0) DebugDepositKey(terminalInput.Dequeue());
+            if (terminalInput.Count != 0)
+            {
+                byte b = terminalInput.Dequeue();
+                if (debugDepositActive) DebugDepositKey(b);
+                else CedKey(b);
+            }
             return;
         }
         ServiceInterrupts();
@@ -953,6 +963,7 @@ public sealed class Cpu6
         if (svc == 0x42) { DebugDump(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x43) { DebugDisasm(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x44) { StartDebugDeposit(ReadDebugAddress(0x0800)); return; }
+        if (svc == 0x50) { StartCed(); return; }
         Unknown();
     }
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
@@ -1036,6 +1047,158 @@ public sealed class Cpu6
                 Write8(0xF201, ch);
             }
         }
+    }
+    void StartCed()
+    {
+        SetCedActiveFile(ReadDebugLine().Trim());
+        cedActive = true;
+        cedInput.Clear();
+        DebugOut("\r\nSYSTEM.CED V0.1\r\n");
+        DebugOut($"ProDOS paths; active file {cedActiveDisplay}; DISPLAY defaults to current terminal. Q exits.\r\n");
+        CedPrompt();
+    }
+    string ReadDebugLine()
+    {
+        const ushort line = 0x2F00;
+        var s = new StringBuilder();
+        for (int i = 0; i < 32; i++)
+        {
+            byte ch = (byte)(mem[(ushort)(line + i)] & 0x7F);
+            if (ch == '\r' || ch == '\n') break;
+            s.Append((char)ch);
+        }
+        return s.ToString();
+    }
+    void SetCedActiveFile(string spec)
+    {
+        if (String.IsNullOrWhiteSpace(spec)) { cedActiveFile = "TEST"; cedActiveDisplay = "/SYSTEM/TEST"; return; }
+        string display = RemoveWhitespace(spec).ToUpperInvariant();
+        if (display.StartsWith("ED", StringComparison.Ordinal)) display = display.Substring(2);
+        string member = display;
+        int colon = member.LastIndexOf(':');
+        if (colon >= 0) member = member.Substring(colon + 1);
+        int slash = member.LastIndexOf('/');
+        if (slash >= 0) member = member.Substring(slash + 1);
+        if (member.Length == 0) member = "TEST";
+        if (member.Length > 10) member = member.Substring(0, 10);
+        cedActiveFile = member;
+        cedActiveDisplay = display;
+    }
+    void CedPrompt() { DebugOut("CED:"); }
+    void CedKey(byte raw)
+    {
+        byte ch = (byte)(raw & 0x7F);
+        if (ch == '\n') return;
+        if (ch == '\r')
+        {
+            string line = cedInput.ToString();
+            cedInput.Clear();
+            DebugOut("\r\n");
+            CedCommand(line);
+            if (cedActive) CedPrompt();
+            return;
+        }
+        if (ch == 0x08 || ch == 0x7F)
+        {
+            if (cedInput.Length > 0) { cedInput.Length--; DebugOut("\b \b"); }
+            return;
+        }
+        if (ch >= 32 && ch < 127)
+        {
+            cedInput.Append((char)ch);
+            Write8(0xF201, ch);
+        }
+    }
+    void CedCommand(string input)
+    {
+        string trimmed = input.Trim();
+        string compact = RemoveWhitespace(trimmed).ToUpperInvariant();
+        if (compact.Length == 0) return;
+        if (compact == "Q" || compact == "QUIT" || compact == "EXIT") { cedActive = false; DebugOut("LEAVING CED\r\n"); return; }
+        if (compact == "HELP" || compact == "?") { DebugOut("Pfirst,last print; W writes active file; DISPLAY uses current terminal; n text sets line; Q quits\r\n"); return; }
+        if (compact == "DISPLAY") { DebugOut("DISPLAY T0\r\n"); return; }
+        if (compact == "W" || compact == "WRITE") { CedWriteActiveFile(); return; }
+        if (compact[0] == 'P') { CedPrint(compact.Substring(1)); return; }
+        if (Char.IsDigit(trimmed[0])) { CedSetLine(trimmed); return; }
+        DebugOut("?CED\r\n");
+    }
+    string RemoveWhitespace(string s)
+    {
+        var b = new StringBuilder();
+        foreach (char c in s) if (!Char.IsWhiteSpace(c)) b.Append(c);
+        return b.ToString();
+    }
+    bool ParseNumber(string s, ref int i, out int n)
+    {
+        n = 0; int start = i;
+        while (i < s.Length && Char.IsDigit(s[i])) { n = n * 10 + (s[i] - '0'); i++; }
+        return i != start;
+    }
+    void CedPrint(string spec)
+    {
+        int i = 0;
+        if (!ParseNumber(spec, ref i, out int first)) { DebugOut("?RANGE\r\n"); return; }
+        int last = first;
+        if (i < spec.Length && spec[i] == ',') { i++; if (!ParseNumber(spec, ref i, out last)) last = first; }
+        foreach (var kv in cedLines)
+            if (kv.Key >= first && kv.Key <= last) DebugOut($"{kv.Key,5} {kv.Value}\r\n");
+    }
+    void CedSetLine(string input)
+    {
+        int i = 0;
+        if (!ParseNumber(input, ref i, out int n)) { DebugOut("?LINE\r\n"); return; }
+        string text = i < input.Length ? input.Substring(i).TrimStart() : "";
+        if (text.Length == 0) cedLines.Remove(n);
+        else cedLines[n] = text;
+    }
+    void CedWriteActiveFile()
+    {
+        if (hawkImage == null) { DebugOut("?NO HAWK\r\n"); return; }
+        if (!FindSystemMember(cedActiveFile, out int page, out int capacity)) { DebugOut("?NO FILE\r\n"); return; }
+        var text = new StringBuilder();
+        foreach (var kv in cedLines) text.Append(kv.Value).Append("\r\n");
+        byte[] data = Encoding.ASCII.GetBytes(text.ToString());
+        if (data.Length > capacity) { DebugOut("?TOO BIG\r\n"); return; }
+        int sector = 0x20 + page / 2;
+        int offset = HawkImageOffsetForLogicalSector(sector) + (page & 1) * 200;
+        Array.Fill<byte>(hawkImage, 0x20, offset, capacity);
+        Buffer.BlockCopy(data, 0, hawkImage, offset, data.Length);
+        SaveHawk();
+        DebugOut($"Wrote {cedActiveDisplay}\r\n");
+    }
+    bool FindSystemMember(string name, out int page, out int capacity)
+    {
+        page = 0; capacity = 0;
+        int dir = HawkImageOffsetForLogicalSector(0x20);
+        if (dir < 0 || dir + 400 > hawkImage.Length) return false;
+        int found = -1, next = Int32.MaxValue;
+        for (int row = 16; row < 400; row += 16)
+        {
+            if (hawkImage[dir + row] == 0x84 && hawkImage[dir + row + 1] == 0x8D) break;
+            string n = DecodeMemberName(dir + row);
+            int p = hawkImage[dir + row + 10] + Math.Max(0, hawkImage[dir + row + 12] - 0x08) * 128;
+            if (String.Equals(n, name, StringComparison.OrdinalIgnoreCase)) found = p;
+        }
+        if (found < 0) return false;
+        for (int row = 16; row < 400; row += 16)
+        {
+            if (hawkImage[dir + row] == 0x84 && hawkImage[dir + row + 1] == 0x8D) break;
+            int p = hawkImage[dir + row + 10] + Math.Max(0, hawkImage[dir + row + 12] - 0x08) * 128;
+            if (p > found && p < next) next = p;
+        }
+        page = found;
+        capacity = (next == Int32.MaxValue ? 2 : next - found) * 200;
+        return capacity > 0;
+    }
+    string DecodeMemberName(int offset)
+    {
+        var b = new StringBuilder();
+        for (int i = 0; i < 10; i++)
+        {
+            char c = (char)(hawkImage[offset + i] & 0x7F);
+            if (c != ' ') b.Append(c);
+        }
+        return b.ToString();
     }
     void DebugRegs()
     {
@@ -1637,6 +1800,7 @@ public sealed class Cpu6
     public void QueueTerminalInput(byte b)
     {
         if (debugDepositActive) DebugDepositKey(b);
+        else if (cedActive) CedKey(b);
         else terminalInput.Enqueue(b);
     }
 }

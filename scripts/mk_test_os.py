@@ -49,9 +49,11 @@ def emit_hawk_waits(a):
 
 def emit_member(a, row, typ="SYS"):
     """Print one 16-byte SYSTEM library row from the cached directory sector."""
-    a.lda_i(0x2000).xaz()
+    base = 0x2000 + (row & 0xFF80)
+    off = row & 0x7F
+    a.lda_i(base).xaz()
     for i in range(10):
-        a.ldab_z(row + i).ldbb_i(0x7F).andb_bl_al().xfrb_al_bl().stbb_d(0xF201)
+        a.ldab_z(off + i).ldbb_i(0x7F).andb_bl_al().xfrb_al_bl().stbb_d(0xF201)
     a.print(f" {typ}\r\n")
 
 
@@ -59,8 +61,10 @@ def emit_cat_rows(a):
     """Emit CAT rows from SYSTEM page 0 until the 84 8D terminator."""
     for row in range(16, 200, 16):
         cont = f"cat_row_{row:02x}"
-        a.lda_i(0x2000).xaz()
-        a.ldab_z(row).ldbb_i(0x84).sabb().bnz(cont)
+        base = 0x2000 + (row & 0xFF80)
+        off = row & 0x7F
+        a.lda_i(base).xaz()
+        a.ldab_z(off).ldbb_i(0x84).sabb().bnz(cont)
         a.jmp_abs("cat_done")
         a.label(cont)
         emit_member(a, row, "TXT" if row == 32 else "SYS")
@@ -108,13 +112,14 @@ def build_command(welcome_sector):
     a.jsr_abs("getc_echo")
     cmp_al('S', "cmd_sta"); cmp_al('s', "cmd_sta")
     cmp_al('D', "cmd_debug"); cmp_al('d', "cmd_debug")
+    cmp_al('C', "cmd_ced"); cmp_al('c', "cmd_ced")
     a.jsr_abs("drain_line")
     a.print("?SYNTAX\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_help")
     a.jsr_abs("drain_line")
-    a.print("COMMANDS: CAT, TYPE WELCOME, HELP, .STA, .DEBUG, QUIT\r\n")
+    a.print("COMMANDS: CAT, TYPE WELCOME, HELP, .STA, .DEBUG, .CED, QUIT\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_sta")
@@ -130,6 +135,10 @@ def build_command(welcome_sector):
     a.print(" T1:  MUX1        OFFLINE\r\n")
     a.print(" T2:  MUX2        OFFLINE\r\n")
     a.print(" T3:  MUX3        OFFLINE\r\n")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_ced")
+    a.jsr_abs("ced_line_start")
     a.jmp_abs("prompt")
 
     a.label("cmd_debug")
@@ -224,9 +233,28 @@ def build_command(welcome_sector):
         a.svc(svc)
         a.rsr()
 
+    def ced_line_reader(label, svc):
+        buf = 0x2F00
+        end = f"{label}_end"
+        a.label(label)
+        for i in range(32):
+            a.ldab_i(0x0D).stab_d(buf + i)
+        for i in range(32):
+            cont = f"{label}_cont_{i}"
+            a.jsr_abs("getc_echo")
+            a.stab_d(buf + i)
+            a.ldbb_i(0x0D).sabb().bnz(cont)
+            a.jmp_abs(end)
+            a.label(cont)
+        a.jsr_abs("drain_line")
+        a.label(end)
+        a.svc(svc)
+        a.rsr()
+
     debug_line_reader("debug_line_dump", 0x42)
     debug_line_reader("debug_line_unasm", 0x43)
     debug_line_reader("debug_line_deposit", 0x44)
+    ced_line_reader("ced_line_start", 0x50)
 
     a.label("drain_line")
     a.jsr_abs("getc_echo")
@@ -309,7 +337,10 @@ welcome_sector = DATA + welcome_page // 2
 command = build_command(welcome_sector)
 assert command_sectors == -(-len(command) // 400)
 basic_placeholder = b"CV\x00\x20\x00\x20\x00\x00BASIC placeholder\r" * 8
-command_page = welcome_page + alloc_pages(len(WELCOME_TEXT)) + alloc_pages(len(basic_placeholder))
+ced_placeholder = b"CV\x00\x20\x00\x20\x00\x00CED is resident in COMMAND via SVC $50\r" * 4
+test_placeholder = b"TEST is a preallocated cvit CED save target.\r".ljust(400, b" ")
+zep_placeholder = b"ZEP is a preallocated cvit CED save target.\r".ljust(400, b" ")
+command_page = welcome_page + alloc_pages(len(WELCOME_TEXT)) + alloc_pages(len(basic_placeholder)) + alloc_pages(len(ced_placeholder)) + alloc_pages(len(test_placeholder)) + alloc_pages(len(zep_placeholder))
 command_sector = DATA + command_page // 2
 kernel = build_kernel(command_sector, command_sectors)
 assert welcome_page == 2 + alloc_pages(len(kernel))
@@ -317,9 +348,12 @@ assert welcome_page == 2 + alloc_pages(len(kernel))
 (root / "os/kernel.bin").write_bytes(kernel)
 (root / "os/welcome.txt").write_bytes(WELCOME_TEXT)
 (root / "os/basic.bin").write_bytes(basic_placeholder)
+(root / "os/ced.bin").write_bytes(ced_placeholder)
+(root / "os/test.txt").write_bytes(test_placeholder)
+(root / "os/zep.txt").write_bytes(zep_placeholder)
 (root / "os/command.bin").write_bytes(command)
 (root / "out").mkdir(exist_ok=True)
 subprocess.check_call([sys.executable, str(root / "scripts/mkhawk.py"), str(root / "out/os.img"), "--force",
     "--member", f"KERNEL={root}/os/kernel.bin", "--member", f"WELCOME={root}/os/welcome.txt",
-    "--member", f"BASIC={root}/os/basic.bin", "--member", f"COMMAND={root}/os/command.bin"])
+    "--member", f"BASIC={root}/os/basic.bin", "--member", f"CED={root}/os/ced.bin", "--member", f"TEST={root}/os/test.txt", "--member", f"ZEP={root}/os/zep.txt", "--member", f"COMMAND={root}/os/command.bin"])
 print(f"WELCOME at sector 0x{welcome_sector:04X}; COMMAND at sector 0x{command_sector:04X}+{command_sectors} -> 0x{COMMAND_LOAD:04X}")
