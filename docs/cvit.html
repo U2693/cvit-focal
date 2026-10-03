@@ -133,7 +133,9 @@ H1: Hawk platter 1
 </code></pre>
 <p>Examples: <code>ZEP</code>, <code>H1:ZEP</code>, <code>/SYSTEM/ZEP</code>,
 <code>H0:/SYSTEM/TEST</code>. Missing device defaults to <code>H0:</code>; missing path defaults
-to the current prefix, initially <code>/SYSTEM</code>.</p>
+to the current prefix, initially <code>/SYSTEM</code>. biscvit can mount separate
+<code>--hawk0</code> and <code>--hawk1</code> images; CED/TYPE emulator-assisted paths route
+<code>H1:</code> FQFNs to the second image.</p>
 
 <h2>Near-term cleanup direction</h2>
 <ul>

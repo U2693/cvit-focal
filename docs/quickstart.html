@@ -22,7 +22,7 @@
   <h2>Run the bundled bootstrap + floppy image</h2>
   <pre><code>./scripts/boot.sh</code></pre>
 
-  <p>The script loads <code>roms/bootstrap_unscrambled.bin</code>, mounts <code>roms/floppy.img</code>,
+  <p>The script loads <code>roms/bootstrap_unscrambled.bin</code>, mounts <code>disks/floppy.img</code>,
   and configures the floppy geometry used by the local image.</p>
 
   <h2>Run the bootstrap + Hawk image</h2>
@@ -64,7 +64,7 @@ BOOT_KEYS=$'H0\r' ./scripts/boot_hawk.sh</code></pre>
 
 dotnet run -- \
   --boot-rom roms/bootstrap_unscrambled.bin \
-  --floppy roms/floppy.img \
+  --floppy disks/floppy.img \
   --floppy-sector-size 400 \
   --floppy-sectors-per-track 20 \
   --floppy-heads 1 \

@@ -95,7 +95,7 @@ H1:  Hawk platter 1
 <table>
 <tr><th>Example</th><th>Meaning</th></tr>
 <tr><td><code>ZEP</code></td><td>Member <code>ZEP</code> under the current prefix on the current device.</td></tr>
-<tr><td><code>H1:ZEP</code></td><td>Member <code>ZEP</code> on Hawk platter 1. Currently display-preserved but mapped to the mounted Hawk image.</td></tr>
+<tr><td><code>H1:ZEP</code></td><td>Member <code>ZEP</code> on Hawk platter 1, routed to the image mounted with <code>--hawk1</code>.</td></tr>
 <tr><td><code>/SYSTEM/ZEP</code></td><td>Absolute path on current device.</td></tr>
 <tr><td><code>H0:/SYSTEM/TEST</code></td><td>Fully qualified device plus absolute path.</td></tr>
 </table>
@@ -111,7 +111,7 @@ H1:  Hawk platter 1
 <tr><td class="done">Done</td><td>CED load</td><td><code>.CED file</code> loads existing member text into numbered lines.</td></tr>
 <tr><td class="done">Done</td><td>CED write existing</td><td><code>W</code> overwrites the active member if content fits.</td></tr>
 <tr><td class="done">Done</td><td>CED fixed create</td><td><code>W</code> creates a missing member as one preallocated sector.</td></tr>
-<tr><td class="partial">Partial</td><td>FQFN handling</td><td>Parser recognizes device/path/name forms, but only one mounted Hawk image is active.</td></tr>
+<tr><td class="partial">Partial</td><td>FQFN handling</td><td>Parser recognizes device/path/name forms. <code>H0:</code> and <code>H1:</code> can map to separate mounted images, but only the SYSTEM library path is implemented.</td></tr>
 <tr><td class="partial">Partial</td><td>File sizes</td><td>Current text reads infer size by trimming trailing spaces/NULs.</td></tr>
 </table>
 
@@ -166,7 +166,7 @@ kernel calls so programs do not depend on emulator-assisted services.</p>
 <tr><td>5</td><td>Directory growth</td><td>Support more than one directory page for SYSTEM and future directories.</td></tr>
 <tr><td>6</td><td>Delete/free/reuse</td><td>Add free-space accounting and safe reuse of deleted sectors.</td></tr>
 <tr><td>7</td><td>Rename</td><td>Update directory rows safely.</td></tr>
-<tr><td>8</td><td>Multiple devices</td><td>Make <code>H0:</code> and <code>H1:</code> map to distinct mounted images/platters.</td></tr>
+<tr><td>8</td><td>Multiple devices</td><td><code>H0:</code> and <code>H1:</code> can be mounted as distinct images; continue integrating this below emulator-assisted paths and into kernel/device APIs.</td></tr>
 <tr><td>9</td><td>Subdirectories/prefix</td><td>Move beyond the single SYSTEM library model.</td></tr>
 </table>
 
@@ -176,7 +176,7 @@ kernel calls so programs do not depend on emulator-assisted services.</p>
 <li>Writes larger than the current allocation fail with <code>?TOO BIG</code>.</li>
 <li>No delete, truncate, rename, or sector reuse yet.</li>
 <li>No robust recovery if a write is interrupted midway.</li>
-<li>Only a single mounted Hawk image is used even when FQFNs mention <code>H1:</code>.</li>
+<li>Only emulator-assisted CED/TYPE paths currently route <code>H1:</code>; the kernel filesystem API still needs full device integration.</li>
 <li>Directory capacity is limited by current single-page SYSTEM directory handling.</li>
 </ul>
 </body>

@@ -7,7 +7,7 @@ observed fixed offsets, and applies CentOpSys boot/volume/catalog fixups needed
 for a logical Disk-6 image suitable for biscvit.
 
 Examples:
-  scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
+  scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe disks/cops.img --side 0
   scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe /tmp/cops_2h.img --all-sides
 """
 

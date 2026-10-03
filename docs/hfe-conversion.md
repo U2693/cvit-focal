@@ -29,7 +29,7 @@ For this image, useful bytes can be recovered with this experimental decode:
 4. The Centurion sector payload begins at decoded byte offset `75` within each decoded side/track stream.
 5. Extract `20 * 400` bytes per track side.
 
-The current `roms/cops.img` was produced from **side 0 only** so it can be mounted with biscvit's current single-head boot geometry:
+The current `disks/cops.img` was produced from **side 0 only** so it can be mounted with biscvit's current single-head boot geometry:
 
 ```text
 77 tracks * 20 sectors/track * 400 bytes/sector = 616000 bytes
@@ -40,7 +40,7 @@ The current `roms/cops.img` was produced from **side 0 only** so it can be mount
 The HFE-to-Disk-6 converter now lives at `scripts/hfe_to_disk6.py`:
 
 ```sh
-scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe roms/cops.img --side 0
+scripts/hfe_to_disk6.py ../CenturionComputer/Drives/Floppy/FluxReading/CentOpSys.hfe disks/cops.img --side 0
 ```
 
 It decodes each side stream as above, extracts individual 400-byte sector payloads, and applies the current CentOpSys Disk-6 boot/volume/catalog reconstruction.  On normally formatted tracks the converter now uses the fixed nominal sector starts.  Earlier FF-gap scanning was useful for discovery but is unsafe for extraction because real payloads can contain long `FF` runs that look like sector gaps.  The resulting side-0 image size is:
@@ -65,7 +65,7 @@ This matches the FDIPL access pattern observed via FFC tracing: sector `0x000E` 
 
 ## Validation
 
-After conversion, `roms/cops.img` contains recognizable Centurion/WIPL strings when masking the high bit:
+After conversion, `disks/cops.img` contains recognizable Centurion/WIPL strings when masking the high bit:
 
 ```text
 FDIPL
@@ -81,7 +81,7 @@ Example check:
 ```sh
 python3 - <<'PY'
 from pathlib import Path
-b = Path('roms/cops.img').read_bytes()
+b = Path('disks/cops.img').read_bytes()
 m = bytes([x & 0x7f for x in b])
 for term in [b'FDIPL', b'@LOAD', b'@SYS', b'@OSN', b'READY', b'MONITOR']:
     print(term.decode(), m.find(term))

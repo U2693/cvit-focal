@@ -39,6 +39,8 @@ public static class BiscvitProgram
                 else if (a == "--ffc-linear-experimental") cpu.FfcLinear = true;
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
                 else if (a == "--hawk" && i + 1 < args.Length) cpu.MountHawk(args[++i]);
+                else if (a == "--hawk0" && i + 1 < args.Length) cpu.MountHawk(0, args[++i]);
+                else if (a == "--hawk1" && i + 1 < args.Length) cpu.MountHawk(1, args[++i]);
                 else if (a == "--hawk-sector-size" && i + 1 < args.Length) cpu.HawkSectorSize = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--hawk-sector-stride" && i + 1 < args.Length) cpu.HawkSectorStride = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--hawk-sectors-per-track" && i + 1 < args.Length) cpu.HawkSectorsPerTrack = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -61,7 +63,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image] [--boot-floppy] [--run] [--max n]");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--run] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
         Console.WriteLine("TUI keys: terminal focus is always active; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
@@ -799,9 +801,12 @@ public sealed class Cpu6
     ushort hawkSectorAddress;
     byte[] ffcCommandBuffer = new byte[0];
     byte[] floppyImage, hawkImage;
+    readonly byte[][] hawkImages = new byte[2][];
     bool muxInterruptEnabled;
     string floppyPath, hawkPath;
+    readonly string[] hawkPaths = new string[2];
     CvitFileSystem cvitFs;
+    readonly CvitFileSystem[] cvitFileSystems = new CvitFileSystem[2];
     public int FloppyTracks { get; set; } = 77;
     public int FloppyHeads { get; set; } = 2;
     public int FloppySectorsPerTrack { get; set; } = 26;
@@ -853,15 +858,24 @@ public sealed class Cpu6
         floppyStatus = 1;
         Console.WriteLine("mounted 8-inch floppy: {0} ({1} bytes{2})", path, floppyImage.Length, IsAllZero(floppyImage) ? ", blank" : "");
     }
-    public void MountHawk(string path)
+    public void MountHawk(string path) => MountHawk(0, path);
+    public void MountHawk(int unit, string path)
     {
-        hawkPath = path;
-        hawkImage = File.Exists(path) ? File.ReadAllBytes(path) : new byte[HawkSectorStride * HawkSectorsPerTrack * HawkHeads * 203];
-        if (HawkImageOffset < 0) HawkImageOffset = DetectHawkImageOffset(hawkImage);
-        cvitFs = new CvitFileSystem(hawkImage, HawkImageOffsetForLogicalSector, HawkSectorSize, SaveHawk);
+        if (unit < 0 || unit >= hawkImages.Length) throw new ArgumentException("bad Hawk unit: " + unit);
+        byte[] image = File.Exists(path) ? File.ReadAllBytes(path) : new byte[HawkSectorStride * HawkSectorsPerTrack * HawkHeads * 203];
+        if (HawkImageOffset < 0) HawkImageOffset = DetectHawkImageOffset(image);
+        hawkImages[unit] = image;
+        hawkPaths[unit] = path;
+        cvitFileSystems[unit] = new CvitFileSystem(image, HawkImageOffsetForLogicalSector, HawkSectorSize, () => SaveHawk(unit));
+        if (unit == 0)
+        {
+            hawkImage = image;
+            hawkPath = path;
+            cvitFs = cvitFileSystems[unit];
+        }
         hawkStatus = 0;
         hawkDriveStatus = 0x3F;
-        Console.WriteLine("mounted Hawk drive: {0} ({1} bytes, data offset {2}{3})", path, hawkImage.Length, HawkImageOffset, IsAllZero(hawkImage) ? ", blank" : "");
+        Console.WriteLine("mounted Hawk H{0}: {1} ({2} bytes, data offset {3}{4})", unit, path, image.Length, HawkImageOffset, IsAllZero(image) ? ", blank" : "");
     }
     int DetectHawkImageOffset(byte[] image)
     {
@@ -897,7 +911,7 @@ public sealed class Cpu6
             if (terminalInput.Count != 0) return terminalInput.Dequeue();
             return 0;
         }
-        if (hawkImage != null && a >= 0xF140 && a <= 0xF148) return ReadHawkReg(a);
+        if (AnyHawkMounted && a >= 0xF140 && a <= 0xF148) return ReadHawkReg(a);
         if (a >= 0xF140 && a <= 0xF145) return ReadFloppyReg(a);
         if (a == 0xF800) return ffcResult;
         if (a == 0xF801) return ffcStatus;
@@ -923,7 +937,7 @@ public sealed class Cpu6
             }
             return;
         }
-        if (hawkImage != null && a >= 0xF140 && a <= 0xF148) { WriteHawkReg(a, b); return; }
+        if (AnyHawkMounted && a >= 0xF140 && a <= 0xF148) { WriteHawkReg(a, b); return; }
         if (a >= 0xF140 && a <= 0xF145) { WriteFloppyReg(a, b); return; }
         if (a == 0xF800) { WriteFfcCommand(b); return; }
         mem[a] = b;
@@ -1216,6 +1230,12 @@ public sealed class Cpu6
             }
         }
     }
+    CvitFileSystem CvitFsForDisplay(string display)
+    {
+        string d = RemoveWhitespace(display).ToUpperInvariant();
+        int unit = d.StartsWith("H1:", StringComparison.Ordinal) ? 1 : 0;
+        return cvitFileSystems[unit] ?? (unit == 0 ? cvitFs : null);
+    }
     (string Member, string Display) ParseCvitFileSpec(string spec, string defaultDisplay, params string[] commandPrefixes)
     {
         string display = RemoveWhitespace(spec).ToUpperInvariant();
@@ -1238,9 +1258,10 @@ public sealed class Cpu6
     }
     void TypeSystemMember()
     {
-        if (cvitFs == null) { DebugOut("?NO HAWK\r\n"); return; }
-        string member = ParseCvitFileSpec(ReadDebugLine(), "WELCOME", "YPE", "TYPE").Member;
-        if (!cvitFs.TryReadTextMember(member, out string text)) { DebugOut("?NO FILE\r\n"); return; }
+        var parsed = ParseCvitFileSpec(ReadDebugLine(), "WELCOME", "YPE", "TYPE");
+        CvitFileSystem fs = CvitFsForDisplay(parsed.Display);
+        if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
+        if (!fs.TryReadTextMember(parsed.Member, out string text)) { DebugOut("?NO FILE\r\n"); return; }
         DebugOut("\r\n");
         foreach (char ch in text) Write8(0xF201, ch);
         DebugOut("\r\n");
@@ -1346,7 +1367,8 @@ public sealed class Cpu6
     void CedLoadActiveFile()
     {
         cedLines.Clear();
-        if (cvitFs == null || !cvitFs.TryReadTextMember(cedActiveFile, out string text)) return;
+        CvitFileSystem fs = CvitFsForDisplay(cedActiveDisplay);
+        if (fs == null || !fs.TryReadTextMember(cedActiveFile, out string text)) return;
         int lineNo = 1;
         var line = new StringBuilder();
         for (int i = 0; i < text.Length; i++)
@@ -1365,10 +1387,11 @@ public sealed class Cpu6
     }
     void CedWriteActiveFile()
     {
-        if (cvitFs == null) { DebugOut("?NO HAWK\r\n"); return; }
+        CvitFileSystem fs = CvitFsForDisplay(cedActiveDisplay);
+        if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
         var text = new StringBuilder();
         foreach (var kv in cedLines) text.Append(kv.Value).Append("\r\n");
-        if (!cvitFs.WriteTextMember(cedActiveFile, text.ToString(), createIfMissing: true, out string error)) { DebugOut(error + "\r\n"); return; }
+        if (!fs.WriteTextMember(cedActiveFile, text.ToString(), createIfMissing: true, out string error)) { DebugOut(error + "\r\n"); return; }
         DebugOut($"Wrote {cedActiveDisplay}\r\n");
     }
     void DebugRegs()
@@ -1700,6 +1723,8 @@ public sealed class Cpu6
     int HawkImageOffsetForLogicalSector(int logicalSector) => HawkImageOffset + logicalSector * HawkSectorStride;
     void HawkTransfer(bool read)
     {
+        int unit = ActiveHawkUnit;
+        byte[] image = ActiveHawkImage();
         int logicalSector = HawkLogicalSectorForAddress();
         int imageOffset = HawkImageOffsetForLogicalSector(logicalSector);
         int count = DmaTransferCount();
@@ -1708,21 +1733,21 @@ public sealed class Cpu6
         if (FloppyTrace)
         {
             int cylinder = (hawkSectorAddress >> 5) & 0x7FF, head = (hawkSectorAddress >> 4) & 1, sector = hawkSectorAddress & 0x0F;
-            string first16 = read && imageOffset >= 0 && imageOffset < hawkImage.Length ? BitConverter.ToString(hawkImage, imageOffset, Math.Min(16, Math.Min(HawkSectorSize, hawkImage.Length - imageOffset))).Replace("-", " ") : "";
-            Console.Error.WriteLine($"Hawk {(read ? "READ" : "WRITE")} unit={hawkUnit & 0x0F} cyl={cylinder} head={head} sector={sector} addr=${hawkSectorAddress:X4} bytes={count} dma=${dmaAddr:X4} raw_offset={imageOffset} stride={HawkSectorStride} first16={first16}");
+            string first16 = read && imageOffset >= 0 && imageOffset < image.Length ? BitConverter.ToString(image, imageOffset, Math.Min(16, Math.Min(HawkSectorSize, image.Length - imageOffset))).Replace("-", " ") : "";
+            Console.Error.WriteLine($"Hawk {(read ? "READ" : "WRITE")} unit={unit} cyl={cylinder} head={head} sector={sector} addr=${hawkSectorAddress:X4} bytes={count} dma=${dmaAddr:X4} raw_offset={imageOffset} stride={HawkSectorStride} first16={first16}");
         }
         int remaining = count, done = 0;
         while (remaining > 0)
         {
             int n = Math.Min(HawkSectorSize, remaining);
             int off = HawkImageOffsetForLogicalSector(logicalSector++);
-            if (off < 0 || off + n > hawkImage.Length) throw new InvalidOperationException($"Hawk address out of range: addr=${hawkSectorAddress:X4} offset={off} count={n}");
-            if (read) Buffer.BlockCopy(hawkImage, off, mem, dmaAddr + done, n);
-            else Buffer.BlockCopy(mem, dmaAddr + done, hawkImage, off, n);
+            if (off < 0 || off + n > image.Length) throw new InvalidOperationException($"Hawk address out of range: unit={unit} addr=${hawkSectorAddress:X4} offset={off} count={n}");
+            if (read) Buffer.BlockCopy(image, off, mem, dmaAddr + done, n);
+            else Buffer.BlockCopy(mem, dmaAddr + done, image, off, n);
             done += n;
             remaining -= n;
         }
-        if (!read) SaveHawk();
+        if (!read) SaveHawk(unit);
     }
 
     byte ReadFloppyReg(ushort a)
@@ -1882,19 +1907,29 @@ public sealed class Cpu6
     {
         if (floppyImage == null) throw new InvalidOperationException("no floppy mounted; use --floppy image or monitor command: floppy image");
     }
+    bool AnyHawkMounted => hawkImages[0] != null || hawkImages[1] != null;
+    int ActiveHawkUnit => (hawkUnit & 0x0F) == 1 ? 1 : 0;
+    byte[] ActiveHawkImage()
+    {
+        int unit = ActiveHawkUnit;
+        if (hawkImages[unit] == null) throw new InvalidOperationException($"no Hawk H{unit} mounted; use --hawk{unit} image");
+        return hawkImages[unit];
+    }
+    CvitFileSystem ActiveCvitFs => cvitFileSystems[ActiveHawkUnit] ?? cvitFs;
     void EnsureHawk()
     {
-        if (hawkImage == null) throw new InvalidOperationException("no Hawk drive mounted; use --hawk image");
+        ActiveHawkImage();
     }
     void SaveFloppy()
     {
         if (String.IsNullOrEmpty(floppyPath)) return;
         File.WriteAllBytes(floppyPath, floppyImage);
     }
-    void SaveHawk()
+    void SaveHawk() => SaveHawk(0);
+    void SaveHawk(int unit)
     {
-        if (String.IsNullOrEmpty(hawkPath)) return;
-        File.WriteAllBytes(hawkPath, hawkImage);
+        if (unit < 0 || unit >= hawkImages.Length || String.IsNullOrEmpty(hawkPaths[unit]) || hawkImages[unit] == null) return;
+        File.WriteAllBytes(hawkPaths[unit], hawkImages[unit]);
     }
     static bool IsAllZero(byte[] bytes)
     {

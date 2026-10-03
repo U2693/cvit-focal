@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROM="${ROM:-$ROOT/roms/bootstrap_unscrambled.bin}"
-FLOPPY="${FLOPPY:-$ROOT/roms/floppy.img}"
+FLOPPY="${FLOPPY:-$ROOT/disks/floppy.img}"
 BOOT_KEYS="${BOOT_KEYS:-F0\\r}"
 FLOPPY_HEADS="${FLOPPY_HEADS:-1}"
 FFC_LINEAR_EXPERIMENTAL_ARGS=()
