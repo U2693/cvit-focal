@@ -64,7 +64,7 @@ public static class BiscvitProgram
         Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image] [--boot-floppy] [--run] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
-        Console.WriteLine("TUI keys: Ctrl-Tab, Alt-=, or Esc = terminal focus; s step, r run/pause, n 100 steps, c clear HALT, Ctrl-R reset CPU, +/- speed, [/ ] refresh, g goto memory, m edit memory, l load binary, b breakpoint, q/F10 quit");
+        Console.WriteLine("TUI keys: Ctrl-Tab, Alt-=, or Esc = toggle terminal/TUI focus; in TUI focus: r run/pause, s step, n 100 steps, c clear HALT, Ctrl-R reset CPU, b breakpoint, q/F10 quit");
     }
     static void QueueText(Cpu6 cpu, string text)
     {
@@ -100,7 +100,7 @@ public sealed class Tui
     ushort resetPc;
     bool running;
     bool haveLast;
-    bool terminalFocus;
+    bool terminalFocus = true;
     bool escapePrefix;
     bool followPc = true;
     int stepsPerTick = 250;
@@ -296,42 +296,40 @@ public sealed class Tui
     void Draw()
     {
         int w = SafeWidth(), h = SafeHeight();
-        if (w < 40 || h < 10) return;
+        if (w < 40 || h < 5) return;
         try { Console.Clear(); } catch { }
         Console.SetCursorPosition(0, 0);
         Console.ForegroundColor = ConsoleColor.White; Console.BackgroundColor = ConsoleColor.DarkBlue;
-        Put(0, 0, Pad(" biscvit - Centurion CPU6 TUI emulator", w));
+        Put(0, 0, Pad($" biscvit console  PC {cpu.PC:X4}  {(cpu.Halted ? "HALT" : running ? "RUN" : "PAUSE")}  {status}", w));
         Console.ResetColor();
 
-        bool wide = w >= 104;
-        if (wide)
-        {
-            int leftWidth = Math.Min(74, Math.Max(54, w / 2 - 2));
-            int dividerX = leftWidth + 1;
-            int rightX = dividerX + 2;
-            int rightWidth = w - rightX;
-            DrawDivider(dividerX, 1, h - 2);
-            DrawRegs(0, 2, leftWidth);
-            int helpY = h - 4;
-            DrawMemory(0, 7, Math.Max(1, Math.Min(16, helpY - 8)), leftWidth);
-            DrawHelp(0, helpY, leftWidth);
-            int deviceRows = Math.Min(8, Math.Max(4, h / 5));
-            int deviceY = h - deviceRows - 2;
-            int terminalRows = Math.Max(1, deviceY - 3);
-            DrawTerminal(rightX, 2, rightWidth, terminalRows);
-            DrawDevices(rightX, deviceY, rightWidth, deviceRows);
-        }
-        else
-        {
-            int memRows = Math.Min(10, h / 2 - 5);
-            DrawRegs(0, 2, w);
-            DrawMemory(0, 7, Math.Max(1, memRows), w);
-            DrawTerminal(0, 8 + memRows, w, Math.Max(1, h - memRows - 11));
-        }
-
-        Console.ResetColor();
-        Put(0, h - 1, Pad("status: " + status + " | " + (terminalFocus ? "TERMINAL" : "TUI") + " focus | steps " + steps + " | speed " + stepsPerTick + "/tick | refresh " + refreshMs + "ms" + (followPc ? " | follow PC" : ""), w));
+        DrawTerminal(0, 2, w, Math.Max(1, h - 3));
+        DrawButtons(0, h - 1, w);
         Snapshot();
+    }
+
+    void DrawButtons(int x, int y, int width)
+    {
+        string focus = terminalFocus ? "TERM" : "TUI";
+        string run = running ? "Pause" : "Run";
+        string brk = cpu.Breakpoint < 0 ? "BRK ----" : $"BRK {cpu.Breakpoint:X4}";
+        string[] buttons = new[]
+        {
+            $"[R {run}]",
+            "[S Step]",
+            "[N +100]",
+            "[C ClrHalt]",
+            "[Ctrl-R Reset]",
+            $"[Ctrl-Tab {focus}]",
+            $"[{brk}]",
+            "[F10 Quit]"
+        };
+        string line = string.Join(" ", buttons);
+        if (line.Length > width) line = line.Substring(0, width);
+        Console.ForegroundColor = ConsoleColor.Black;
+        Console.BackgroundColor = ConsoleColor.Gray;
+        Put(x, y, Pad(line, width));
+        Console.ResetColor();
     }
 
     void DrawDivider(int x, int y, int height)
