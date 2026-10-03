@@ -1078,6 +1078,7 @@ public sealed class Cpu6
     void StartCed()
     {
         SetCedActiveFile(ReadDebugLine().Trim());
+        CedLoadActiveFile();
         cedActive = true;
         cedInput.Clear();
         DebugOut("\r\nSYSTEM.CED V0.1\r\n");
@@ -1182,10 +1183,39 @@ public sealed class Cpu6
         if (text.Length == 0) cedLines.Remove(n);
         else cedLines[n] = text;
     }
+    void CedLoadActiveFile()
+    {
+        cedLines.Clear();
+        if (hawkImage == null) return;
+        if (!FindSystemMember(cedActiveFile, out int page, out int capacity)) return;
+        int sector = 0x20 + page / 2;
+        int offset = HawkImageOffsetForLogicalSector(sector) + (page & 1) * 200;
+        int end = capacity;
+        while (end > 0 && (hawkImage[offset + end - 1] == 0 || hawkImage[offset + end - 1] == 0x20)) end--;
+        int lineNo = 1;
+        var line = new StringBuilder();
+        for (int i = 0; i < end; i++)
+        {
+            byte b = (byte)(hawkImage[offset + i] & 0x7F);
+            if (b == '\r' || b == '\n')
+            {
+                if (line.Length != 0) cedLines[lineNo] = line.ToString();
+                lineNo++;
+                line.Clear();
+                if (b == '\r' && i + 1 < end && (hawkImage[offset + i + 1] & 0x7F) == '\n') i++;
+            }
+            else if (b >= 32 && b < 127) line.Append((char)b);
+        }
+        if (line.Length != 0) cedLines[lineNo] = line.ToString();
+    }
     void CedWriteActiveFile()
     {
         if (hawkImage == null) { DebugOut("?NO HAWK\r\n"); return; }
-        if (!FindSystemMember(cedActiveFile, out int page, out int capacity)) { DebugOut("?NO FILE\r\n"); return; }
+        if (!FindSystemMember(cedActiveFile, out int page, out int capacity))
+        {
+            if (!CreateSystemMember(cedActiveFile)) { DebugOut("?NO FILE\r\n"); return; }
+            if (!FindSystemMember(cedActiveFile, out page, out capacity)) { DebugOut("?NO FILE\r\n"); return; }
+        }
         var text = new StringBuilder();
         foreach (var kv in cedLines) text.Append(kv.Value).Append("\r\n");
         byte[] data = Encoding.ASCII.GetBytes(text.ToString());
@@ -1196,6 +1226,68 @@ public sealed class Cpu6
         Buffer.BlockCopy(data, 0, hawkImage, offset, data.Length);
         SaveHawk();
         DebugOut($"Wrote {cedActiveDisplay}\r\n");
+    }
+    bool CreateSystemMember(string name)
+    {
+        if (hawkImage == null || String.IsNullOrWhiteSpace(name) || name.Length > 10) return false;
+        if (FindSystemMember(name, out _, out _)) return true;
+        int dir = HawkImageOffsetForLogicalSector(0x20);
+        if (dir < 0 || dir + 400 > hawkImage.Length) return false;
+        int term = -1;
+        for (int row = 16; row < 200; row += 16)
+        {
+            if (hawkImage[dir + row] == 0x84 && hawkImage[dir + row + 1] == 0x8D) { term = row; break; }
+        }
+        if (term < 0 || term + 17 >= 200) return false;
+        int ual = HawkImageOffsetForLogicalSector(0x12);
+        if (ual < 0 || ual + 400 > hawkImage.Length) return false;
+        int nsec = ((hawkImage[ual] << 8) | hawkImage[ual + 1]) + 1;
+        int newSector = 0x20 + nsec;
+        int newPage = nsec * 2;
+        int newOff = HawkImageOffsetForLogicalSector(newSector);
+        if (newOff < 0 || newOff + HawkSectorSize > hawkImage.Length) return false;
+
+        for (int i = 0; i < 10; i++)
+            hawkImage[dir + term + i] = (byte)(((i < name.Length ? name[i] : ' ') & 0x7F) | 0x80);
+        hawkImage[dir + term + 10] = (byte)(newPage % 128);
+        hawkImage[dir + term + 11] = 0;
+        hawkImage[dir + term + 12] = (byte)(0x08 + newPage / 128);
+        hawkImage[dir + term + 13] = 0x14;
+        hawkImage[dir + term + 14] = 0;
+        hawkImage[dir + term + 15] = 0;
+        hawkImage[dir + term + 16] = 0x84;
+        hawkImage[dir + term + 17] = 0x8D;
+
+        Array.Fill<byte>(hawkImage, 0x20, newOff, HawkSectorSize);
+        hawkImage[ual] = (byte)(nsec >> 8);
+        hawkImage[ual + 1] = (byte)nsec;
+        AppendSystemUalSector(newSector);
+        SaveHawk();
+        return true;
+    }
+    void AppendSystemUalSector(int sector)
+    {
+        for (int us = 0; us < 6; us++)
+        {
+            int off = HawkImageOffsetForLogicalSector(0x12 + us);
+            int start = us == 0 ? 6 : 0;
+            for (int p = start; p <= HawkSectorSize - 3; p += 3)
+            {
+                if (hawkImage[off + p] == 0xFF && hawkImage[off + p + 1] == 0xFF && hawkImage[off + p + 2] == 0xFF)
+                {
+                    hawkImage[off + p] = (byte)(sector >> 16);
+                    hawkImage[off + p + 1] = (byte)(sector >> 8);
+                    hawkImage[off + p + 2] = (byte)sector;
+                    if (p + 5 < HawkSectorSize)
+                    {
+                        hawkImage[off + p + 3] = 0xFF;
+                        hawkImage[off + p + 4] = 0xFF;
+                        hawkImage[off + p + 5] = 0xFF;
+                    }
+                    return;
+                }
+            }
+        }
     }
     bool FindSystemMember(string name, out int page, out int capacity)
     {
