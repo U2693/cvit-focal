@@ -114,8 +114,8 @@ type       byte    ; SYS/BIN/TXT/BAS/DIR equivalent
 2. Console `putc`/`puts`/`getc` routines.
 3. Hawk `read_block`/`write_block` wrappers over native 400-byte sectors. **Started:** `CAT` reads sector `0x20` directly.
 4. Read `SYSTEM` library and list members with `CAT`. **Started:** current stub reads page 0 and prints rows until the `84 8D` terminator.
-5. `TYPE WELCOME` demo: a text member is read from Hawk and displayed on the console. **Done for one-sector `SYSTEM/WELCOME`.**
+5. `TYPE name` demo: a text member is read from Hawk and displayed on the console. **Done for existing SYSTEM members such as `WELCOME`, `TEST`, and `ZEP`.**
 6. Load and run `SYSTEM/COMMAND`. **Done:** KERNEL loads COMMAND at `0x3000` and jumps to it.
 7. Interactive COMMAND loop. **Started:** supports `CAT`, `TYPE WELCOME`, `HELP`, `.STA`, `.DEBUG`, `.CED`, and `QUIT`.
 8. Resident debugger. **Started:** `.DEBUG` enters a monitor shell. `R` displays registers, `X $NNNN` examines/dumps memory, `DNNNN` deposits bytes until `.`, `U $NNNN` disassembles memory, and placeholders remain for breakpoints, single-step, mini-assembler, and quit.
-9. CED editor. **Started:** `.CED [file]` enters a CED-style line editor with `CED:` prompt and active file defaulting to `/SYSTEM/TEST`. Whitespace in commands is ignored; `P5,9` prints lines 5-9, `DISPLAY` defaults to the current terminal, numeric input sets/deletes lines, `W` writes the active preallocated member (for example `H1:ZEP`), and `Q` exits.
+9. CED editor. **Started:** `.CED [file]` enters a CED-style line editor with `CED:` prompt and active file defaulting to `/SYSTEM/TEST`. Whitespace in commands is ignored; `P5,9` or `5,9P` prints lines 5-9, `DISPLAY` defaults to the current terminal, numeric input sets/deletes lines, `W` writes the active preallocated member, `W file` switches/writes a preallocated member (for example `H1:ZEP`), and `Q` exits.

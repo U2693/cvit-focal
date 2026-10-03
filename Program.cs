@@ -964,6 +964,7 @@ public sealed class Cpu6
         if (svc == 0x43) { DebugDisasm(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x44) { StartDebugDeposit(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x50) { StartCed(); return; }
+        if (svc == 0x51) { TypeSystemMember(); return; }
         Unknown();
     }
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
@@ -1048,6 +1049,32 @@ public sealed class Cpu6
             }
         }
     }
+    string NormalizeCommandFilename(string spec, string defaultName)
+    {
+        string display = RemoveWhitespace(spec).ToUpperInvariant();
+        foreach (string prefix in new[] { "YPE", "TYPE", "ED", "CED" })
+            if (display.StartsWith(prefix, StringComparison.Ordinal)) { display = display.Substring(prefix.Length); break; }
+        if (display.Length == 0) display = defaultName;
+        int colon = display.LastIndexOf(':');
+        string member = colon >= 0 ? display.Substring(colon + 1) : display;
+        int slash = member.LastIndexOf('/');
+        if (slash >= 0) member = member.Substring(slash + 1);
+        if (member.Length == 0) member = defaultName;
+        return member.Length > 10 ? member.Substring(0, 10) : member;
+    }
+    void TypeSystemMember()
+    {
+        if (hawkImage == null) { DebugOut("?NO HAWK\r\n"); return; }
+        string member = NormalizeCommandFilename(ReadDebugLine(), "WELCOME");
+        if (!FindSystemMember(member, out int page, out int capacity)) { DebugOut("?NO FILE\r\n"); return; }
+        int sector = 0x20 + page / 2;
+        int offset = HawkImageOffsetForLogicalSector(sector) + (page & 1) * 200;
+        int end = capacity;
+        while (end > 0 && (hawkImage[offset + end - 1] == 0 || hawkImage[offset + end - 1] == 0x20)) end--;
+        DebugOut("\r\n");
+        for (int i = 0; i < end; i++) Write8(0xF201, hawkImage[offset + i]);
+        DebugOut("\r\n");
+    }
     void StartCed()
     {
         SetCedActiveFile(ReadDebugLine().Trim());
@@ -1074,6 +1101,7 @@ public sealed class Cpu6
         if (String.IsNullOrWhiteSpace(spec)) { cedActiveFile = "TEST"; cedActiveDisplay = "/SYSTEM/TEST"; return; }
         string display = RemoveWhitespace(spec).ToUpperInvariant();
         if (display.StartsWith("ED", StringComparison.Ordinal)) display = display.Substring(2);
+        if (display.Length == 0) { cedActiveFile = "TEST"; cedActiveDisplay = "/SYSTEM/TEST"; return; }
         string member = display;
         int colon = member.LastIndexOf(':');
         if (colon >= 0) member = member.Substring(colon + 1);
@@ -1118,7 +1146,10 @@ public sealed class Cpu6
         if (compact == "HELP" || compact == "?") { DebugOut("Pfirst,last print; W writes active file; DISPLAY uses current terminal; n text sets line; Q quits\r\n"); return; }
         if (compact == "DISPLAY") { DebugOut("DISPLAY T0\r\n"); return; }
         if (compact == "W" || compact == "WRITE") { CedWriteActiveFile(); return; }
+        if (compact.StartsWith("WRITE", StringComparison.Ordinal) && compact.Length > 5) { SetCedActiveFile(compact.Substring(5)); CedWriteActiveFile(); return; }
+        if (compact[0] == 'W' && compact.Length > 1) { SetCedActiveFile(compact.Substring(1)); CedWriteActiveFile(); return; }
         if (compact[0] == 'P') { CedPrint(compact.Substring(1)); return; }
+        if (compact.EndsWith("P", StringComparison.Ordinal) && compact.Length > 1) { CedPrint(compact.Substring(0, compact.Length - 1)); return; }
         if (Char.IsDigit(trimmed[0])) { CedSetLine(trimmed); return; }
         DebugOut("?CED\r\n");
     }

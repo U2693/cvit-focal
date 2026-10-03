@@ -80,7 +80,7 @@ def build(members, label, load, entry, stride):
     pages, start = {}, 2
     for n, data in members:
         pages[n] = start
-        start += (-(-len(data) // PAGE) + 1) & ~1   # whole sectors
+        start += max(2, (-(-len(data) // PAGE) + 1) & ~1)   # whole sectors; even empty files get one sector
     lib = bytearray(start * PAGE)
     lib[0:10] = hi("")
     for i, (n, data) in enumerate(members):

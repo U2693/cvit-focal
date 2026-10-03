@@ -16,7 +16,7 @@ root = Path(__file__).parent.parent
 
 def alloc_pages(data_len):
     """SYSTEM library page allocation increment used by mkhawk.py."""
-    return ((data_len + PAGE - 1) // PAGE + 1) & ~1
+    return max(2, ((data_len + PAGE - 1) // PAGE + 1) & ~1)
 
 
 def emit_hawk_read(a, label, sector, dst):
@@ -208,10 +208,7 @@ def build_command(welcome_sector):
     a.jmp_abs("prompt")
 
     a.label("cmd_type")
-    a.jsr_abs("drain_line")
-    a.jsr_abs("read_welcome")
-    a.print("\r\n")
-    emit_cached_text(a, 0x2200, len(WELCOME_TEXT))
+    a.jsr_abs("type_line")
     a.jmp_abs("prompt")
 
     a.label("cmd_quit")
@@ -254,6 +251,7 @@ def build_command(welcome_sector):
     debug_line_reader("debug_line_dump", 0x42)
     debug_line_reader("debug_line_unasm", 0x43)
     debug_line_reader("debug_line_deposit", 0x44)
+    ced_line_reader("type_line", 0x51)
     ced_line_reader("ced_line_start", 0x50)
 
     a.label("drain_line")
@@ -327,33 +325,93 @@ def build_kernel(command_sector, command_sectors=1):
     return a.bytes()
 
 
-# Multi-pass the literals that depend on SYSTEM member placement.  Instruction
-# widths are fixed, so later passes preserve the computed layout.
-command = build_command(0)
-command_sectors = -(-len(command) // 400)
-kernel = build_kernel(0, command_sectors)
-welcome_page = 2 + alloc_pages(len(kernel))
-welcome_sector = DATA + welcome_page // 2
-command = build_command(welcome_sector)
-assert command_sectors == -(-len(command) // 400)
+def member_name(path):
+    n = path.stem.upper()
+    assert 0 < len(n) <= 10, f"bad member name {path.name}: {n}"
+    return n
+
+
+def collect_members(generated):
+    """Return mkhawk members from every file in ./os, with boot-critical order."""
+    files = {member_name(p): p for p in (root / "os").iterdir() if p.is_file()}
+    for fname in generated:
+        files[member_name(Path(fname))] = root / "os" / fname
+    names = set(files)
+    priority = ["KERNEL", "WELCOME", "BASIC", "CED", "TEST", "ZEP"]
+    ordered = [n for n in priority if n in names]
+    ordered += sorted(n for n in names if n not in set(priority) | {"COMMAND"})
+    if "COMMAND" in names:
+        ordered.append("COMMAND")
+    members = []
+    for n in ordered:
+        p = files[n]
+        data = generated.get(p.name, p.read_bytes())
+        members.append((n, p, data))
+    return members
+
+
+def member_pages(members):
+    pages, start = {}, 2
+    for n, _p, data in members:
+        pages[n] = start
+        start += alloc_pages(len(data))
+    return pages
+
+
 basic_placeholder = b"CV\x00\x20\x00\x20\x00\x00BASIC placeholder\r" * 8
 ced_placeholder = b"CV\x00\x20\x00\x20\x00\x00CED is resident in COMMAND via SVC $50\r" * 4
 test_placeholder = b"TEST is a preallocated cvit CED save target.\r".ljust(400, b" ")
 zep_placeholder = b"ZEP is a preallocated cvit CED save target.\r".ljust(400, b" ")
-command_page = welcome_page + alloc_pages(len(WELCOME_TEXT)) + alloc_pages(len(basic_placeholder)) + alloc_pages(len(ced_placeholder)) + alloc_pages(len(test_placeholder)) + alloc_pages(len(zep_placeholder))
-command_sector = DATA + command_page // 2
-kernel = build_kernel(command_sector, command_sectors)
-assert welcome_page == 2 + alloc_pages(len(kernel))
 
-(root / "os/kernel.bin").write_bytes(kernel)
-(root / "os/welcome.txt").write_bytes(WELCOME_TEXT)
-(root / "os/basic.bin").write_bytes(basic_placeholder)
-(root / "os/ced.bin").write_bytes(ced_placeholder)
-(root / "os/test.txt").write_bytes(test_placeholder)
-(root / "os/zep.txt").write_bytes(zep_placeholder)
-(root / "os/command.bin").write_bytes(command)
+# Multi-pass the literals that depend on SYSTEM member placement.  Instruction
+# widths are fixed, so later passes preserve the computed layout.  All files in
+# ./os are included as SYSTEM members; generated files override their on-disk
+# contents for this build.
+command = build_command(0)
+command_sectors = -(-len(command) // 400)
+kernel = build_kernel(0, command_sectors)
+welcome_sector = command_sector = 0
+for _ in range(6):
+    generated = {
+        "kernel.bin": kernel,
+        "welcome.txt": WELCOME_TEXT,
+        "basic.bin": basic_placeholder,
+        "ced.bin": ced_placeholder,
+        "test.txt": test_placeholder,
+        "zep.txt": zep_placeholder,
+        "command.bin": command,
+    }
+    members = collect_members(generated)
+    pages = member_pages(members)
+    new_welcome_sector = DATA + pages["WELCOME"] // 2
+    new_command_sector = DATA + pages["COMMAND"] // 2
+    new_command = build_command(new_welcome_sector)
+    new_command_sectors = -(-len(new_command) // 400)
+    new_kernel = build_kernel(new_command_sector, new_command_sectors)
+    if (new_welcome_sector == welcome_sector and new_command_sector == command_sector and
+            new_command == command and new_kernel == kernel and new_command_sectors == command_sectors):
+        break
+    welcome_sector, command_sector = new_welcome_sector, new_command_sector
+    command, kernel, command_sectors = new_command, new_kernel, new_command_sectors
+else:
+    raise RuntimeError("layout did not converge")
+
+generated = {
+    "kernel.bin": kernel,
+    "welcome.txt": WELCOME_TEXT,
+    "basic.bin": basic_placeholder,
+    "ced.bin": ced_placeholder,
+    "test.txt": test_placeholder,
+    "zep.txt": zep_placeholder,
+    "command.bin": command,
+}
+for fname, data in generated.items():
+    (root / "os" / fname).write_bytes(data)
+members = collect_members(generated)
 (root / "out").mkdir(exist_ok=True)
-subprocess.check_call([sys.executable, str(root / "scripts/mkhawk.py"), str(root / "out/os.img"), "--force",
-    "--member", f"KERNEL={root}/os/kernel.bin", "--member", f"WELCOME={root}/os/welcome.txt",
-    "--member", f"BASIC={root}/os/basic.bin", "--member", f"CED={root}/os/ced.bin", "--member", f"TEST={root}/os/test.txt", "--member", f"ZEP={root}/os/zep.txt", "--member", f"COMMAND={root}/os/command.bin"])
+cmd = [sys.executable, str(root / "scripts/mkhawk.py"), str(root / "out/os.img"), "--force"]
+for n, p, _data in members:
+    cmd += ["--member", f"{n}={p}"]
+subprocess.check_call(cmd)
+print("SYSTEM members:", ", ".join(n for n, _p, _data in members))
 print(f"WELCOME at sector 0x{welcome_sector:04X}; COMMAND at sector 0x{command_sector:04X}+{command_sectors} -> 0x{COMMAND_LOAD:04X}")
