@@ -340,11 +340,18 @@ public sealed class Tui
 
     void DrawMux1Overlay(int screenWidth, int screenHeight)
     {
-        int width = Math.Min(screenWidth, Math.Max(40, screenWidth - 4));
-        int height = Math.Min(Math.Max(6, screenHeight - 6), 18);
-        int x = Math.Max(0, (screenWidth - width) / 2);
+        const int preferredWidth = 80;
+        const int preferredBodyHeight = 24;
+        const int consoleGutter = 8;
+
+        int width = screenWidth >= preferredWidth + consoleGutter
+            ? preferredWidth
+            : Math.Max(20, screenWidth - consoleGutter);
+        int x = Math.Max(0, screenWidth - width); // keep MUX1 pinned to the far right.
         int y = 2;
-        if (screenHeight < y + height + 1) return;
+        int availableHeight = screenHeight - y - 1; // leave the function-key row visible.
+        int height = Math.Min(preferredBodyHeight + 1, availableHeight); // title + body.
+        if (width < 20 || height < 6) return;
 
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.BackgroundColor = ConsoleColor.DarkBlue;
@@ -1164,6 +1171,7 @@ public sealed class Cpu6
     int cedAppendLine;
     string cedActiveFile = "TEST";
     string cedActiveDisplay = "H0:/SYSTEM/TEST";
+    int cedDisplayTerminal;
     int currentCvitDevice;
     string currentCvitPrefix = "/SYSTEM";
     readonly Stack<InterruptFrame> interruptStack = new Stack<InterruptFrame>();
@@ -1542,6 +1550,11 @@ public sealed class Cpu6
         Unknown();
     }
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
+    void CedDisplayOut(string s)
+    {
+        ushort port = cedDisplayTerminal == 1 ? (ushort)0xF209 : (ushort)0xF201;
+        foreach (char ch in s) Write8(port, ch);
+    }
     ushort ReadDebugAddress(ushort defaultAddr)
     {
         const ushort line = CommandLineBuffer;
@@ -1802,6 +1815,7 @@ public sealed class Cpu6
         CedLoadActiveFile();
         cedActive = true;
         cedAppendActive = false;
+        cedDisplayTerminal = 0;
         cedInput.Clear();
         DebugOut("\r\nSYSTEM.CED V0.1\r\n");
         DebugOut($"ProDOS paths; active file {cedActiveDisplay}; DISPLAY defaults to current terminal. Q exits.\r\n");
@@ -1863,8 +1877,10 @@ public sealed class Cpu6
         }
         if (compact.Length == 0) return;
         if (compact == "Q" || compact == "QUIT" || compact == "EXIT") { cedActive = false; DebugOut("LEAVING CED\r\n"); return; }
-        if (compact == "HELP" || compact == "?") { DebugOut("A appends text; Pfirst,last print; W writes active file; DISPLAY uses current terminal; n text sets line; Q quits\r\n"); return; }
-        if (compact == "DISPLAY") { DebugOut("DISPLAY T0\r\n"); return; }
+        if (compact == "HELP" || compact == "?") { DebugOut("A appends text; L lists all; Pfirst,last prints; W writes; DISPLAY T0/T1 selects output; Q quits\r\n"); return; }
+        if (compact == "DISPLAY") { DebugOut($"DISPLAY T{cedDisplayTerminal}\r\n"); return; }
+        if (compact.StartsWith("DISPLAY", StringComparison.Ordinal)) { CedSetDisplay(compact.Substring(7)); return; }
+        if (compact == "L" || compact == "LIST") { CedList(); return; }
         if (compact == "A") { CedStartAppend(null); return; }
         if (compact[0] == 'A' && compact.Length > 1) { CedStartAppend(compact.Substring(1)); return; }
         if (compact == "W" || compact == "WRITE") { CedWriteActiveFile(); return; }
@@ -1900,6 +1916,17 @@ public sealed class Cpu6
         while (cedLines.ContainsKey(cedAppendLine)) cedAppendLine++;
         cedAppendActive = true;
     }
+    void CedSetDisplay(string spec)
+    {
+        if (spec == "T0" || spec == "0" || spec == "CONSOLE") cedDisplayTerminal = 0;
+        else if (spec == "T1" || spec == "1" || spec == "MUX1") cedDisplayTerminal = 1;
+        else { DebugOut("?DISPLAY\r\n"); return; }
+        DebugOut($"DISPLAY T{cedDisplayTerminal}\r\n");
+    }
+    void CedList()
+    {
+        foreach (var kv in cedLines) CedDisplayOut($"{kv.Key,5} {kv.Value}\r\n");
+    }
     void CedPrint(string spec)
     {
         int i = 0;
@@ -1907,7 +1934,7 @@ public sealed class Cpu6
         int last = first;
         if (i < spec.Length && spec[i] == ',') { i++; if (!ParseNumber(spec, ref i, out last)) last = first; }
         foreach (var kv in cedLines)
-            if (kv.Key >= first && kv.Key <= last) DebugOut($"{kv.Key,5} {kv.Value}\r\n");
+            if (kv.Key >= first && kv.Key <= last) CedDisplayOut($"{kv.Key,5} {kv.Value}\r\n");
     }
     void CedSetLine(string input)
     {

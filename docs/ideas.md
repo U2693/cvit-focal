@@ -20,4 +20,11 @@
   - Keep CONSOLE output visible underneath or restore it when the overlay closes.
   - Later generalize to `MUX2`/`MUX3`.
 
+- Fantasy peripheral: add a TMS9928A-style video card to biscvit.
+  - Use an unused MMIO range for VDP data/control/status ports.
+  - Emulate 16 KiB VRAM, VDP registers, address latch, status flags, and optional vblank interrupt.
+  - Start with text/tile rendering in a toggleable TUI video overlay; later add sprites and richer graphics modes.
+  - Add cvit demos such as `VDPDEMO` or monitor poke examples that display text/tiles.
+  - Use the frame interrupt as a practical playground for CPU6 interrupt and future MMU experiments.
+
 ## A modern take on nursery rhymes

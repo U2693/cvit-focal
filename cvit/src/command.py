@@ -53,7 +53,7 @@ def build_command(welcome_sector):
 
     a.label("cmd_sta")
     a.jsr_abs("drain_line")
-    a.jsr_abs("sta_native")
+    a.svc(0x53)
     a.jmp_abs("prompt")
 
     a.label("cmd_ced")
