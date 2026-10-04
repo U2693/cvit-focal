@@ -69,7 +69,7 @@ public static class BiscvitProgram
         Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
-        Console.WriteLine("TUI keys: terminal focus is always active; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
+        Console.WriteLine("TUI keys: terminal focus is normally console; F12 toggles MUX1 focus/overlay; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
     }
     static void QueueText(Cpu6 cpu, string text)
     {
@@ -100,6 +100,7 @@ public sealed class Tui
 {
     readonly Cpu6 cpu;
     readonly StringBuilder term = new StringBuilder();
+    readonly StringBuilder mux1Term = new StringBuilder();
     readonly StringBuilder cookedInput = new StringBuilder();
     readonly ushort[] lastPairs = new ushort[8];
     ushort lastPc;
@@ -108,6 +109,7 @@ public sealed class Tui
     bool running;
     bool haveLast;
     bool followPc = true;
+    bool mux1Visible;
     int stepsPerTick = 250;
     int refreshMs = 100;
     long steps;
@@ -122,16 +124,19 @@ public sealed class Tui
         memAt = cpu.PC;
         resetPc = cpu.PC;
         Snapshot();
-        cpu.TerminalOutput += ch =>
-        {
-            int c = ch;
-            if (c >= 0x80) c &= 0x7F; // Centurion terminal strings often carry the high bit.
-            if (c == '\r') return;
-            if (c == '\b') { if (term.Length > 0) term.Length--; return; }
-            if (c == '\f') { term.Clear(); return; }
-            if (term.Length > 4096) term.Remove(0, 1024);
-            term.Append((char)c);
-        };
+        cpu.TerminalOutput += ch => AppendTerminal(term, ch);
+        cpu.Mux1Output += ch => AppendTerminal(mux1Term, ch);
+    }
+
+    void AppendTerminal(StringBuilder target, char ch)
+    {
+        int c = ch;
+        if (c >= 0x80) c &= 0x7F; // Centurion terminal strings often carry the high bit.
+        if (c == '\r') return;
+        if (c == '\b') { if (target.Length > 0) target.Length--; return; }
+        if (c == '\f') { target.Clear(); return; }
+        if (target.Length > 4096) target.Remove(0, 1024);
+        target.Append((char)c);
     }
 
     public void Run()
@@ -158,6 +163,7 @@ public sealed class Tui
                 if (!Console.KeyAvailable) { System.Threading.Thread.Sleep(running ? 1 : 25); continue; }
                 var k = Console.ReadKey(true);
                 if (k.Key == ConsoleKey.F10) break;
+                if (k.Key == ConsoleKey.F12) { mux1Visible = !mux1Visible; status = mux1Visible ? "MUX1 focus" : "console focus"; Draw(); continue; }
                 Handle(k); Draw();
             }
         }
@@ -204,7 +210,8 @@ public sealed class Tui
                     status = cpu.Breakpoint < 0 ? "breakpoint cleared" : "breakpoint " + cpu.Breakpoint.ToString("X4");
                     return;
                 default:
-                    SendTerminalKey(k);
+                    if (mux1Visible) SendMux1Key(k);
+                    else SendTerminalKey(k);
                     return;
             }
         }
@@ -222,6 +229,20 @@ public sealed class Tui
         memAt = (ushort)(cpu.PC & 0xFFF0);
         Snapshot();
         status = "CPU reset PC=" + pc.ToString("X4");
+    }
+
+    void SendMux1Key(ConsoleKeyInfo k)
+    {
+        if ((k.Modifiers & ConsoleModifiers.Control) != 0 && k.Key >= ConsoleKey.A && k.Key <= ConsoleKey.Z)
+        {
+            cpu.QueueMux1Input((byte)(k.Key - ConsoleKey.A + 1));
+            return;
+        }
+        if (!char.IsControl(k.KeyChar)) cpu.QueueMux1Input((byte)k.KeyChar);
+        else if (k.Key == ConsoleKey.Enter) cpu.QueueMux1Input((byte)'\r');
+        else if (k.Key == ConsoleKey.Backspace) cpu.QueueMux1Input(0x08);
+        else if (k.Key == ConsoleKey.Tab) cpu.QueueMux1Input(0x09);
+        else if (k.Key == ConsoleKey.Escape) cpu.QueueMux1Input(0x1B);
     }
 
     void SendTerminalKey(ConsoleKeyInfo k)
@@ -310,41 +331,33 @@ public sealed class Tui
         Console.ResetColor();
 
         DrawTerminal(0, 2, w, Math.Max(1, h - 3));
-        DrawParserOverlay(w, h);
+        if (mux1Visible) DrawMux1Overlay(w, h);
         DrawButtons(0, h - 1, w);
         Snapshot();
     }
 
-    void DrawParserOverlay(int screenWidth, int screenHeight)
-    {
-        int width = Math.Min(46, Math.Max(32, screenWidth / 2));
-        int x = Math.Max(0, screenWidth - width);
-        int y = 2;
-        if (screenHeight < y + 6) return;
-        string[] lines = new[]
-        {
-            BoxTitle(" cvit parser ", width),
-            Pad("mode   " + cpu.CvitMode, width),
-            Pad("prefix " + cpu.CvitPrefixDisplay, width),
-            Pad("file   " + cpu.CvitActiveFileDisplay, width),
-            Pad("console " + CurrentConsoleLine(), width),
-            Pad("edit    " + cookedInput, width),
-            Pad("buffer  " + cpu.CommandLineBufferText, width),
-            Pad("key     " + cpu.LastTerminalKeyDisplay, width),
-        };
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.BackgroundColor = ConsoleColor.DarkBlue;
-        for (int i = 0; i < lines.Length; i++) Put(x, y + i, lines[i]);
-        Console.ResetColor();
-    }
 
-    string CurrentConsoleLine()
+    void DrawMux1Overlay(int screenWidth, int screenHeight)
     {
-        string s = term.ToString().Replace("\r", "");
-        int i = s.LastIndexOf('\n');
-        string line = i >= 0 ? s.Substring(i + 1) : s;
-        if (line.Length > 32) line = line.Substring(line.Length - 32);
-        return line;
+        int width = Math.Min(screenWidth, Math.Max(40, screenWidth - 4));
+        int height = Math.Min(Math.Max(6, screenHeight - 6), 18);
+        int x = Math.Max(0, (screenWidth - width) / 2);
+        int y = 2;
+        if (screenHeight < y + height + 1) return;
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.BackgroundColor = ConsoleColor.DarkBlue;
+        Put(x, y, BoxTitle(" MUX1 MMIO F208/F209 - F12 closes ", width));
+        string[] lines = mux1Term.ToString().Replace("\r", "").Split('\n');
+        int body = height - 1;
+        int start = Math.Max(0, lines.Length - body);
+        for (int i = 0; i < body; i++)
+        {
+            string line = start + i < lines.Length ? lines[start + i] : "";
+            if (line.Length > width) line = line.Substring(line.Length - width);
+            Put(x, y + 1 + i, Pad(line, width));
+        }
+        Console.ResetColor();
     }
 
     void DrawButtons(int x, int y, int width)
@@ -359,6 +372,7 @@ public sealed class Tui
             "[F4 ClrHalt]",
             "[F5 Reset]",
             $"[F6 {brk}]",
+            $"[F12 MUX1 {(mux1Visible ? "On" : "Off")}]",
             "[F10 Quit]"
         };
         string line = string.Join(" ", buttons);
@@ -612,6 +626,7 @@ public sealed class Tui
         string[] lines = new string[]
         {
             $"Terminal F201  inq {cpu.TerminalInputCount}  out {term.Length} chars",
+            $"MUX1 F208/F209 inq {cpu.Mux1InputCount}  out {mux1Term.Length} chars  {(mux1Visible ? "focus" : "idle")}",
             $"Floppy F140    {(cpu.FloppyMounted ? "mounted" : "not mounted")}",
             $"  cmd {cpu.FloppyCommand:X2}  status {cpu.FloppyStatus:X2}  unit {cpu.FloppyUnit:X2}",
             $"  track {cpu.FloppyTrack:D2}  sector {cpu.FloppySector:D2}  head {cpu.FloppyHead:D1}  size {cpu.FloppySectorSize}",
@@ -874,6 +889,7 @@ public sealed class Cpu6
 
     readonly byte[] mem = new byte[65536];
     readonly Queue<byte> terminalInput = new Queue<byte>();
+    readonly Queue<byte> mux1Input = new Queue<byte>();
     byte flags, ipl, op;
     byte lastTerminalKey;
     bool haveLastTerminalKey;
@@ -884,6 +900,8 @@ public sealed class Cpu6
     bool keyTraceActive;
     readonly StringBuilder cedInput = new StringBuilder();
     readonly SortedDictionary<int, string> cedLines = new SortedDictionary<int, string>();
+    bool cedAppendActive;
+    int cedAppendLine;
     string cedActiveFile = "TEST";
     string cedActiveDisplay = "H0:/SYSTEM/TEST";
     int currentCvitDevice;
@@ -919,6 +937,7 @@ public sealed class Cpu6
     public bool FfcLinear { get; set; }
     public int Breakpoint = -1;
     public event Action<char> TerminalOutput;
+    public event Action<char> Mux1Output;
 
     struct InterruptFrame
     {
@@ -1007,6 +1026,12 @@ public sealed class Cpu6
             if (terminalInput.Count != 0) return terminalInput.Dequeue();
             return 0;
         }
+        if (a == 0xF208) return (byte)(0x02 | (mux1Input.Count != 0 ? 0x01 : 0x00)); // MUX1 status
+        if (a == 0xF209)
+        {
+            if (mux1Input.Count != 0) return mux1Input.Dequeue();
+            return 0;
+        }
         if (AnyHawkMounted && a >= 0xF140 && a <= 0xF148) return ReadHawkReg(a);
         if (a >= 0xF140 && a <= 0xF145) return ReadFloppyReg(a);
         if (a == 0xF800) return ffcResult;
@@ -1016,7 +1041,7 @@ public sealed class Cpu6
     void Write8(ushort a, int v)
     {
         byte b = (byte)v;
-        if (a == 0xF200) return; // MUX0 control/config
+        if (a == 0xF200 || a == 0xF208) return; // MUX control/config
         if (a == 0xF20A || a == 0xF20E) { muxInterruptEnabled = b != 0; mem[a] = b; return; } // MUX interrupt-ish enables used by WIPL
         if (a == 0xF201)
         {
@@ -1031,6 +1056,12 @@ public sealed class Cpu6
                 if (c == '\f') Console.WriteLine();
                 else Console.Write((char)c);
             }
+            return;
+        }
+        if (a == 0xF209)
+        {
+            var h = Mux1Output;
+            if (h != null) h((char)b);
             return;
         }
         if (AnyHawkMounted && a >= 0xF140 && a <= 0xF148) { WriteHawkReg(a, b); return; }
@@ -1452,7 +1483,7 @@ public sealed class Cpu6
         DebugOut(HawkStatusLine(1));
         DebugOut("\r\nTERMINALS\r\n");
         DebugOut(" T0:  CONSOLE     9600\r\n");
-        DebugOut(" T1:  MUX1        OFFLINE\r\n");
+        DebugOut(" T1:  MUX1        9600\r\n");
         DebugOut(" T2:  MUX2        OFFLINE\r\n");
         DebugOut(" T3:  MUX3        OFFLINE\r\n");
     }
@@ -1467,6 +1498,7 @@ public sealed class Cpu6
         SetCedActiveFile(ReadDebugLine().Trim());
         CedLoadActiveFile();
         cedActive = true;
+        cedAppendActive = false;
         cedInput.Clear();
         DebugOut("\r\nSYSTEM.CED V0.1\r\n");
         DebugOut($"ProDOS paths; active file {cedActiveDisplay}; DISPLAY defaults to current terminal. Q exits.\r\n");
@@ -1490,7 +1522,7 @@ public sealed class Cpu6
         cedActiveFile = parsed.Member;
         cedActiveDisplay = parsed.Display;
     }
-    void CedPrompt() { DebugOut("CED:"); }
+    void CedPrompt() { DebugOut(cedAppendActive ? $"{cedAppendLine,5} " : "CED:"); }
     void CedKey(byte raw)
     {
         byte ch = (byte)(raw & 0x7F);
@@ -1519,10 +1551,19 @@ public sealed class Cpu6
     {
         string trimmed = input.Trim();
         string compact = RemoveWhitespace(trimmed).ToUpperInvariant();
+        if (cedAppendActive)
+        {
+            if (trimmed.Length == 0 || trimmed == ".") { cedAppendActive = false; return; }
+            cedLines[cedAppendLine] = trimmed;
+            do { cedAppendLine++; } while (cedLines.ContainsKey(cedAppendLine));
+            return;
+        }
         if (compact.Length == 0) return;
         if (compact == "Q" || compact == "QUIT" || compact == "EXIT") { cedActive = false; DebugOut("LEAVING CED\r\n"); return; }
-        if (compact == "HELP" || compact == "?") { DebugOut("Pfirst,last print; W writes active file; DISPLAY uses current terminal; n text sets line; Q quits\r\n"); return; }
+        if (compact == "HELP" || compact == "?") { DebugOut("A appends text; Pfirst,last print; W writes active file; DISPLAY uses current terminal; n text sets line; Q quits\r\n"); return; }
         if (compact == "DISPLAY") { DebugOut("DISPLAY T0\r\n"); return; }
+        if (compact == "A") { CedStartAppend(null); return; }
+        if (compact[0] == 'A' && compact.Length > 1) { CedStartAppend(compact.Substring(1)); return; }
         if (compact == "W" || compact == "WRITE") { CedWriteActiveFile(); return; }
         if (compact.StartsWith("WRITE", StringComparison.Ordinal) && compact.Length > 5) { SetCedActiveFile(compact.Substring(5)); CedWriteActiveFile(); return; }
         if (compact[0] == 'W' && compact.Length > 1) { SetCedActiveFile(compact.Substring(1)); CedWriteActiveFile(); return; }
@@ -1542,6 +1583,19 @@ public sealed class Cpu6
         n = 0; int start = i;
         while (i < s.Length && Char.IsDigit(s[i])) { n = n * 10 + (s[i] - '0'); i++; }
         return i != start;
+    }
+    void CedStartAppend(string spec)
+    {
+        int start = 1;
+        foreach (int n in cedLines.Keys) if (n >= start) start = n + 1;
+        if (!String.IsNullOrEmpty(spec))
+        {
+            int i = 0;
+            if (!ParseNumber(spec, ref i, out start) || i != spec.Length || start <= 0) { DebugOut("?LINE\r\n"); return; }
+        }
+        cedAppendLine = start;
+        while (cedLines.ContainsKey(cedAppendLine)) cedAppendLine++;
+        cedAppendActive = true;
     }
     void CedPrint(string spec)
     {
@@ -2179,6 +2233,7 @@ public sealed class Cpu6
     public string Flags { get { return FlagString(); } }
     public byte Ipl { get { return ipl; } }
     public int TerminalInputCount { get { return terminalInput.Count; } }
+    public int Mux1InputCount { get { return mux1Input.Count; } }
     public int InterruptDepth { get { return interruptStack.Count; } }
     public ushort DmaAddr { get { return dmaAddr; } }
     public ushort DmaCount { get { return dmaCount; } }
@@ -2247,5 +2302,10 @@ public sealed class Cpu6
         else if (cedActive) CedKey(b);
         else if (keyTraceActive) KeyTraceKey(b);
         else terminalInput.Enqueue(b);
+    }
+
+    public void QueueMux1Input(byte b)
+    {
+        mux1Input.Enqueue(b);
     }
 }

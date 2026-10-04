@@ -131,7 +131,7 @@ def build_command(welcome_sector):
 
     a.label("cmd_sta")
     a.jsr_abs("drain_line")
-    a.svc(0x53)
+    a.jsr_abs("sta_native")
     a.jmp_abs("prompt")
 
     a.label("cmd_ced")
@@ -221,6 +221,21 @@ def build_command(welcome_sector):
     a.label("cmd_quit")
     a.jsr_abs("drain_line")
     a.raw(0x71, 0x08, 0x09)  # JMP absolute kernel quit vector.
+
+    a.label("sta_native")
+    a.print("\r\nCPU6\r\n")
+    a.print("MEM  128K\r\n\r\n")
+    a.print("DISKS\r\n")
+    a.print(" F0:  8\" FLOPPY   EMPTY\r\n")
+    a.print(" F1:  8\" FLOPPY   EMPTY\r\n")
+    a.print(" H0:  HAWK        READY  CVIT\r\n")
+    a.print(" H1:  HAWK        EMPTY\r\n")
+    a.print("\r\nTERMINALS\r\n")
+    a.print(" T0:  CONSOLE     9600\r\n")
+    a.print(" T1:  MUX1        9600\r\n")
+    a.print(" T2:  MUX2        OFFLINE\r\n")
+    a.print(" T3:  MUX3        OFFLINE\r\n")
+    a.rsr()
 
     def debug_line_reader(label, svc):
         buf = 0x2F00

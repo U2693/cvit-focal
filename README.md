@@ -19,6 +19,6 @@ Options: `--load file addr`, `--pc addr`, `--sp addr`, `--boot-rom file`, `--typ
 
 Experimental: `--ffc-linear-experimental` makes the FFC shim treat track/sector command bytes as one 16-bit linear block address. Do not use it for normal floppy booting; FDIPL uses floppy CHS addressing.
 
-Devices: MUX terminal status/data at `F200/F201`, simple floppy registers at `F140-F145`, Hawk drive registers at `F140-F148` when `--hawk` is mounted, and a bootstrap-compatible FFC shim at `F800/F801` supporting command DMA (`43`) and execute (`45`).
+Devices: console MUX status/data at `F200/F201`, MUX1 status/data at `F208/F209`, simple floppy registers at `F140-F145`, Hawk drive registers at `F140-F148` when `--hawk` is mounted, and a bootstrap-compatible FFC shim at `F800/F801` supporting command DMA (`43`) and execute (`45`).
 
-TUI: the view is a console screen with a function-key button row. Terminal focus is always active; typed printable keys feed reads from `F201`. Buttons: `F1` run/pause, `F2` step, `F3` step 100, `F4` clear HALT, `F5` reset CPU, `F6` breakpoint, `F10` quit. Writes to MMIO `F201` appear in the console.
+TUI: the view is a console screen with a function-key button row. Console focus is active by default; typed printable keys feed reads from `F201`. `F12` toggles a MUX1 overlay/focus using `F208/F209`. Buttons: `F1` run/pause, `F2` step, `F3` step 100, `F4` clear HALT, `F5` reset CPU, `F6` breakpoint, `F10` quit. Writes to MMIO `F201` appear in the console; writes to `F209` appear in MUX1.
