@@ -51,6 +51,48 @@ def emit_hawk_waits(a):
     a.print("\r\nHAWK READ ERROR\r\n").hlt().jmp("hawk_error")
 
 
+def emit_disk6_read_block(a):
+    """Emit KERNEL read_block: read one 400-byte Disk6 floppy sector via FFC.
+
+    BX points at:
+      +0 unit, +1 track, +2 sector, +3 head, +4 u16 destination.
+    The caller supplies Disk6 CHS (logical sector N => track N/20, sector N%20
+    for the default 20-sector geometry).  AL returns the FFC result byte.
+    """
+    cmd = 0x2EE0
+    a.label("read_block")
+    # Build an FFC command buffer in RAM.
+    a.ldab_i(0x81).stab_d(cmd + 0)
+    a.ldab_bx(0).stab_d(cmd + 1)
+    a.ldab_i(0x83).stab_d(cmd + 2)
+    a.ldab_bx(1).stab_d(cmd + 3)
+    a.ldab_i(0x85).stab_d(cmd + 4)
+    a.ldab_bx(3).stab_d(cmd + 5)
+    a.ldab_i(0x88).stab_d(cmd + 6)
+    a.ldab_bx(2).stab_d(cmd + 7)
+    a.ldab_i(0x00).stab_d(cmd + 8)
+    a.ldab_i(0x01).stab_d(cmd + 9)
+    a.ldab_i(0x90).stab_d(cmd + 10)
+    a.ldab_i(0xFF).stab_d(cmd + 11)
+
+    # DMA command bytes to the FFC, then execute with data DMA to CB+4.
+    a.lda_i(cmd).dma_sad_a()
+    a.lda_i(0xFFF3).dma_sct_a()      # -12 -> 12-byte command buffer
+    a.dma_sdv_0().dma_eab()
+    a.ldab_i(0x43).stab_d(0xF800)
+    a.lda_bx(4).dma_sad_a()
+    a.lda_i(0xFE6F).dma_sct_a()      # -401 -> 400-byte sector
+    a.dma_sdv_0().dma_eab()
+    a.ldab_i(0x45).stab_d(0xF800)
+    a.ldab_d(0xF800)
+    a.ldbb_i(0).sabb().bnz("disk6_read_error")
+    a.rsr()
+    a.label("disk6_read_error")
+    a.print("\r\nDISK6 READ ERROR\r\n")
+    a.ldab_d(0xF800)
+    a.rsr()
+
+
 def emit_member(a, row, typ="SYS"):
     """Print one 16-byte SYSTEM library row from the cached directory sector."""
     base = 0x2000 + (row & 0xFF80)
@@ -329,8 +371,11 @@ def build_kernel(command_sector, command_sectors=1):
 
     a.label("syscall")
     a.stb_d(0x2EFE)          # SVC $40 ABI: AX=function, BX=control block pointer.
-    a.ldbb_i(1).sabb().bnz("syscall_unimpl")
+    a.ldbb_i(1).sabb().bnz("syscall_not_putc")
     a.ldb_d(0x2EFE).ldab_bx(0).stab_d(0xF201).rsr()  # function 1: putc, CB+0 = char.
+    a.label("syscall_not_putc")
+    a.ldbb_i(2).sabb().bnz("syscall_unimpl")
+    a.ldb_d(0x2EFE).jmp_abs("read_block")             # function 2: Disk6 read_block.
     a.label("syscall_unimpl")
     a.ldb_d(0x2EFE).print("\r\n?SVC\r\n").rsr()
 
@@ -341,11 +386,12 @@ def build_kernel(command_sector, command_sectors=1):
     for i in range(command_sectors):
         emit_hawk_read(a, f"load_command_{i}", command_sector + i, COMMAND_LOAD + 400 * i)
     emit_hawk_waits(a)
+    emit_disk6_read_block(a)
 
     # Bring-up stubs for the future MLI-ish API.  Returning is friendlier for calls;
     # direct jumps still make the missing vector visible.
     for vector in [
-        "read_block", "write_block", "open", "close", "read", "write",
+        "write_block", "open", "close", "read", "write",
         "get_file_info", "set_file_info", "create", "destroy", "rename",
         "set_prefix", "get_prefix",
     ]:

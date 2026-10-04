@@ -37,10 +37,27 @@ stable API without knowing internal addresses:
 | `082D` | `set_prefix` |
 | `0830` | `get_prefix` |
 
-For now, KERNEL provides the boot/banner and COMMAND loader path. The `syscall`
-vector is entered by `SVC $40`; `AX` is the function selector and `BX` points to
-a function-specific control block. Unimplemented vectors print `?UNIMPL` and
-return during bring-up.
+For now, KERNEL provides the boot/banner, COMMAND loader path, and a first
+`read_block` implementation for 400-byte Disk6 floppy sectors via the FFC. The
+`syscall` vector is entered by `SVC $40`; `AX` is the function selector and `BX`
+points to a function-specific control block. Other unimplemented vectors print
+`?UNIMPL` and return during bring-up.
+
+### `read_block` Disk6 control block
+
+Jump/call vector `080C` with `BX` pointing at:
+
+| Offset | Meaning |
+| --- | --- |
+| `+0` | FFC unit (`0` for `F0:`) |
+| `+1` | track |
+| `+2` | sector within track |
+| `+3` | head |
+| `+4` | destination address, big-endian u16 |
+
+The vector reads one 400-byte sector into the destination and returns the FFC
+result in `AL` (`0` on success). For the default 20-sector Disk6 geometry,
+logical sector `N` maps to `track=N/20`, `sector=N%20`, `head=0`.
 
 ## System call ABI
 
@@ -57,6 +74,7 @@ Initial selectors:
 | AX | Function | Control block |
 | --- | --- | --- |
 | `0001` | console putc | `CB+0`: byte character, displayed on the current terminal |
+| `0002` | Disk6 read block | same control block as `read_block` vector |
 
 Unknown selectors currently print `?SVC` and return.
 

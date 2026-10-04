@@ -75,6 +75,7 @@ class Asm:
     def stbb_d(self, a): return self.raw(0xE1).u16(a)
     def lda_z(self, d): return self.raw(0x95, 0x88, d)
     def ldab_z(self, d): return self.raw(0x85, 0x88, d)
+    def lda_bx(self, d): return self.raw(0x95, 0x28, d)
     def ldab_bx(self, d): return self.raw(0x85, 0x28, d)
     def stab_z(self, d): return self.raw(0xA5, 0x88, d)
     def stb_z(self, d): return self.raw(0xF5, 0x88, d)
