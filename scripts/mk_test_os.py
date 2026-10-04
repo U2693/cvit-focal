@@ -11,7 +11,11 @@ COMMAND_LOAD = 0x3000
 WELCOME_TEXT = b"WELCOME TO cvit\r\nTHIS TEXT WAS LOADED FROM /SYSTEM/WELCOME.\r\n"
 
 root = Path(__file__).parent.parent
-(root / "os").mkdir(exist_ok=True)
+OS_ROOT = root / "os"
+SYSTEM_ROOT = OS_ROOT / "SYSTEM"
+HELP_ROOT = OS_ROOT / "HELP"
+SYSTEM_ROOT.mkdir(parents=True, exist_ok=True)
+HELP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def alloc_pages(data_len):
@@ -102,6 +106,8 @@ def build_command(welcome_sector):
     cmp_al('C', "cmd_cat"); cmp_al('c', "cmd_cat")
     cmp_al('T', "cmd_type"); cmp_al('t', "cmd_type")
     cmp_al('H', "cmd_help"); cmp_al('h', "cmd_help")
+    cmp_al('P', "cmd_prefix"); cmp_al('p', "cmd_prefix")
+    cmp_al('R', "cmd_run"); cmp_al('r', "cmd_run")
     cmp_al('Q', "cmd_quit"); cmp_al('q', "cmd_quit")
     cmp_al('.', "cmd_dot")
     a.jsr_abs("drain_line")
@@ -113,32 +119,28 @@ def build_command(welcome_sector):
     cmp_al('S', "cmd_sta"); cmp_al('s', "cmd_sta")
     cmp_al('D', "cmd_debug"); cmp_al('d', "cmd_debug")
     cmp_al('C', "cmd_ced"); cmp_al('c', "cmd_ced")
+    cmp_al('K', "cmd_keys"); cmp_al('k', "cmd_keys")
     a.jsr_abs("drain_line")
     a.print("?SYNTAX\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_help")
     a.jsr_abs("drain_line")
-    a.print("COMMANDS: CAT, TYPE WELCOME, HELP, .STA, .DEBUG, .CED, QUIT\r\n")
+    a.print("COMMANDS: CAT, TYPE WELCOME, RUN NAME, PREFIX, HELP, .STA, .DEBUG, .CED, QUIT\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_sta")
     a.jsr_abs("drain_line")
-    a.print("\r\nCPU6\r\n")
-    a.print("MEM  128K\r\n\r\n")
-    a.print("DISKS\r\n")
-    a.print(" F0:  8\" FLOPPY   READY\r\n")
-    a.print(" F1:  8\" FLOPPY   EMPTY\r\n")
-    a.print(" D0:  HAWK        READY\r\n\r\n")
-    a.print("TERMINALS\r\n")
-    a.print(" T0:  CONSOLE     9600\r\n")
-    a.print(" T1:  MUX1        OFFLINE\r\n")
-    a.print(" T2:  MUX2        OFFLINE\r\n")
-    a.print(" T3:  MUX3        OFFLINE\r\n")
+    a.svc(0x53)
     a.jmp_abs("prompt")
 
     a.label("cmd_ced")
     a.jsr_abs("ced_line_start")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_keys")
+    a.jsr_abs("drain_line")
+    a.svc(0x54)
     a.jmp_abs("prompt")
 
     a.label("cmd_debug")
@@ -201,14 +203,19 @@ def build_command(welcome_sector):
     a.jmp_abs("prompt")
 
     a.label("cmd_cat")
-    a.jsr_abs("drain_line")
-    a.jsr_abs("read_system_dir")
-    a.print("\r\nNAME       TYPE\r\n")
-    emit_cat_rows(a)
+    a.jsr_abs("cat_line")
     a.jmp_abs("prompt")
 
     a.label("cmd_type")
     a.jsr_abs("type_line")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_prefix")
+    a.jsr_abs("prefix_line")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_run")
+    a.jsr_abs("run_line")
     a.jmp_abs("prompt")
 
     a.label("cmd_quit")
@@ -252,6 +259,9 @@ def build_command(welcome_sector):
     debug_line_reader("debug_line_unasm", 0x43)
     debug_line_reader("debug_line_deposit", 0x44)
     ced_line_reader("type_line", 0x51)
+    ced_line_reader("cat_line", 0x52)
+    ced_line_reader("prefix_line", 0x55)
+    ced_line_reader("run_line", 0x56)
     ced_line_reader("ced_line_start", 0x50)
 
     a.label("drain_line")
@@ -336,10 +346,10 @@ def member_name(path):
 
 
 def collect_members(generated):
-    """Return mkhawk members from every file in ./os, with boot-critical order."""
-    files = {member_name(p): p for p in (root / "os").iterdir() if p.is_file()}
+    """Return mkhawk SYSTEM members from every file in ./os/SYSTEM, with boot-critical order."""
+    files = {member_name(p): p for p in SYSTEM_ROOT.iterdir() if p.is_file()}
     for fname in generated:
-        files[member_name(Path(fname))] = root / "os" / fname
+        files[member_name(Path(fname))] = SYSTEM_ROOT / fname
     names = set(files)
     priority = ["KERNEL", "WELCOME", "BASIC", "CED", "TEST", "ZEP"]
     ordered = [n for n in priority if n in names]
@@ -369,8 +379,9 @@ zep_placeholder = b"ZEP is a preallocated cvit CED save target.\r".ljust(400, b"
 
 # Multi-pass the literals that depend on SYSTEM member placement.  Instruction
 # widths are fixed, so later passes preserve the computed layout.  All files in
-# ./os are included as SYSTEM members; generated files override their on-disk
-# contents for this build.
+# ./os/SYSTEM files are included as SYSTEM members; generated files override
+# their on-disk contents for this build.  ./os/HELP is reserved for the next
+# library once cvit grows multi-library image generation.
 command = build_command(0)
 command_sectors = -(-len(command) // 400)
 kernel = build_kernel(0, command_sectors)
@@ -410,7 +421,7 @@ generated = {
     "command.bin": command,
 }
 for fname, data in generated.items():
-    (root / "os" / fname).write_bytes(data)
+    (SYSTEM_ROOT / fname).write_bytes(data)
 members = collect_members(generated)
 (root / "out").mkdir(exist_ok=True)
 cmd = [sys.executable, str(root / "scripts/mkhawk.py"), str(root / "out/os.img"), "--force"]

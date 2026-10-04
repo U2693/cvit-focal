@@ -65,6 +65,10 @@ def boot_sector(sec, count, dst, entry):
     return code
 
 
+def member_type(name, path):
+    return 0x04 if Path(path).suffix.lower() in (".txt", ".text") else 0x14
+
+
 def build(members, label, load, entry, stride):
     img = bytearray(SECTORS * stride)
     for n in range(SECTORS):
@@ -74,21 +78,21 @@ def build(members, label, load, entry, stride):
         return memoryview(img)[n * stride:n * stride + PAYLOAD]
 
     # --- SYSTEM library: page 0 = directory, members on sector boundaries
-    names = [n for n, _ in members]
+    names = [n for n, _data, _typ in members]
     assert len(names) == len(set(names)), "duplicate member"
     assert len(members) * 16 + 32 <= PAGE, "too many members for one directory page"
     pages, start = {}, 2
-    for n, data in members:
+    for n, data, _typ in members:
         pages[n] = start
         start += max(2, (-(-len(data) // PAGE) + 1) & ~1)   # whole sectors; even empty files get one sector
     lib = bytearray(start * PAGE)
     lib[0:10] = hi("")
-    for i, (n, data) in enumerate(members):
+    for i, (n, data, typ) in enumerate(members):
         row = lib[16 + i * 16:32 + i * 16]
         row[0:10] = hi(n)
         row[10] = pages[n] % 128
         row[12] = 0x08 + pages[n] // 128
-        row[13] = 0x14
+        row[13] = typ
         lib[16 + i * 16:32 + i * 16] = row
         lib[pages[n] * PAGE:pages[n] * PAGE + len(data)] = data
     end = 16 + len(members) * 16
@@ -139,9 +143,10 @@ def build(members, label, load, entry, stride):
         sec(UAL + k)[:] = u
 
     # --- boot sector
+    member_data = {n: data for n, data, _typ in members}
     k = pages["KERNEL"]
     assert k % 2 == 0
-    boot = boot_sector(DATA + k // 2, -(-len(dict(members)["KERNEL"]) // PAYLOAD), load, entry)
+    boot = boot_sector(DATA + k // 2, -(-len(member_data["KERNEL"]) // PAYLOAD), load, entry)
     sec(0)[:len(boot)] = boot
     return bytes(img), DATA + k // 2
 
@@ -159,8 +164,8 @@ def main():
     members = []
     for m in a.member:
         n, _, f = m.partition("=")
-        members.append((n.upper(), Path(f).read_bytes()))
-    if "KERNEL" not in dict(members):
+        members.append((n.upper(), Path(f).read_bytes(), member_type(n, f)))
+    if "KERNEL" not in {n for n, _data, _typ in members}:
         ap.error("need --member KERNEL=file")
     out = Path(a.out)
     if out.exists() and not a.force:

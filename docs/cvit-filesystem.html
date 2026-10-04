@@ -63,7 +63,7 @@ to 10 characters.</p>
 <tr><td>10</td><td>Low 7 bits of start page.</td></tr>
 <tr><td>11</td><td>Currently unused/reserved.</td></tr>
 <tr><td>12</td><td>High page component stored as <code>0x08 + page / 128</code>.</td></tr>
-<tr><td>13</td><td>Current type/attribute byte, commonly <code>0x14</code>.</td></tr>
+<tr><td>13</td><td>Type byte: <code>0x14</code> = SYS executable/system member, <code>0x04</code> = TXT text member.</td></tr>
 <tr><td>14..15</td><td>Currently unused/reserved.</td></tr>
 </table>
 
@@ -104,14 +104,15 @@ H1:  Hawk platter 1
 <table>
 <tr><th>Status</th><th>Feature</th><th>Notes</th></tr>
 <tr><td class="done">Done</td><td>Bootable Hawk image</td><td><code>scripts/mkhawk.py</code> builds <code>out/os.img</code>.</td></tr>
-<tr><td class="done">Done</td><td>SYSTEM member packaging</td><td><code>scripts/mk_test_os.py</code> pulls in all regular files from <code>./os</code>.</td></tr>
+<tr><td class="done">Done</td><td>SYSTEM member packaging</td><td><code>scripts/mk_test_os.py</code> pulls in all regular files from <code>./os/SYSTEM</code>. <code>./os/HELP</code> is staged for the next library.</td></tr>
 <tr><td class="done">Done</td><td>Sector-aligned member allocation</td><td>All members, including empty files, receive whole-sector allocation.</td></tr>
-<tr><td class="done">Done</td><td>CAT</td><td>Lists SYSTEM directory rows.</td></tr>
+<tr><td class="done">Done</td><td>CAT/CATALOG</td><td>Lists SYSTEM directory rows and file types for the default prefix, <code>H0:</code>, or <code>H1:</code>.</td></tr>
 <tr><td class="done">Done</td><td>TYPE name</td><td>Reads and displays existing SYSTEM text members.</td></tr>
 <tr><td class="done">Done</td><td>CED load</td><td><code>.CED file</code> loads existing member text into numbered lines.</td></tr>
 <tr><td class="done">Done</td><td>CED write existing</td><td><code>W</code> overwrites the active member if content fits.</td></tr>
 <tr><td class="done">Done</td><td>CED fixed create</td><td><code>W</code> creates a missing member as one preallocated sector.</td></tr>
 <tr><td class="partial">Partial</td><td>FQFN handling</td><td>Parser recognizes device/path/name forms. <code>H0:</code> and <code>H1:</code> can map to separate mounted images, but only the SYSTEM library path is implemented.</td></tr>
+<tr><td class="done">Done</td><td>File types</td><td>Directory rows distinguish <code>SYS</code> and <code>TXT</code>. Generated <code>.txt</code> files and CED-created files are <code>TXT</code>.</td></tr>
 <tr><td class="partial">Partial</td><td>File sizes</td><td>Current text reads infer size by trimming trailing spaces/NULs.</td></tr>
 </table>
 

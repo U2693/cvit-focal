@@ -115,7 +115,7 @@
   <h2>Special instructions</h2>
   <table>
     <tr><th>Opcode</th><th>Mnemonic</th><th>Meaning</th></tr>
-    <tr><td><code>66 xx</code></td><td>SVC</td><td>Service call. The cvit kernel handles <code>SVC $40</code> through <code>$0806</code> with <code>AX</code> as function selector and <code>BX</code> as control-block pointer; the emulator currently assists cvit DEBUG with <code>$41</code> registers, <code>$42</code> dump with optional <code>$NNNN</code>, <code>$43</code> disassembly with optional <code>$NNNN</code>, <code>$44</code> deposit, cvit CED with <code>$50</code>, and cvit TYPE with <code>$51</code>.</td></tr>
+    <tr><td><code>66 xx</code></td><td>SVC</td><td>Service call. The cvit kernel handles <code>SVC $40</code> through <code>$0806</code> with <code>AX</code> as function selector and <code>BX</code> as control-block pointer; the emulator currently assists cvit DEBUG with <code>$41</code> registers, <code>$42</code> dump with optional <code>$NNNN</code>, <code>$43</code> disassembly with optional <code>$NNNN</code>, <code>$44</code> deposit, cvit CED with <code>$50</code>, cvit TYPE with <code>$51</code>, cvit CAT/CATALOG with <code>$52</code>, cvit STA with <code>$53</code>, cvit key tracing with <code>$54</code>, prefix management with <code>$55</code>, and flat SYS run with <code>$56</code>.</td></tr>
     <tr><td><code>D7 xx</code></td><td>ILST</td><td>Store AX into interlevel register selected by byte</td></tr>
     <tr><td><code>E6 xx</code></td><td>ILLD</td><td>Load AX from interlevel register selected by byte</td></tr>
     <tr><td><code>F6 spec off</code></td><td>XIO</td><td>Device I/O using <code>EX + off</code></td></tr>

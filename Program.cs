@@ -24,6 +24,7 @@ public static class BiscvitProgram
         {
             Cpu6 cpu = new Cpu6();
             bool headless = false;
+            bool halt = false;
             int maxSteps = 0;
             for (int i = 0; i < args.Length; i++)
             {
@@ -52,10 +53,12 @@ public static class BiscvitProgram
                 else if (a == "--floppy-tracks" && i + 1 < args.Length) cpu.FloppyTracks = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else if (a == "--boot-floppy") cpu.BootFloppy();
                 else if (a == "--run") headless = true;
+                else if (a == "--halt") halt = true;
                 else if (a == "--max" && i + 1 < args.Length) maxSteps = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else throw new ArgumentException("bad argument: " + a);
             }
-            if (headless) cpu.Run(maxSteps); else new Tui(cpu).Run();
+            if (headless) { if (!halt) cpu.Run(maxSteps); }
+            else new Tui(cpu, startRunning: !halt).Run();
             return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine("biscvit: " + ex.Message); return 1; }
@@ -63,7 +66,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--run] [--max n]");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
         Console.WriteLine("TUI keys: terminal focus is always active; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
@@ -79,6 +82,7 @@ public static class BiscvitProgram
                 if (n == 'n') ch = '\n';
                 else if (n == 'r') ch = '\r';
                 else if (n == 't') ch = '\t';
+                else if (n == 'e') ch = '\x1B';
                 else ch = n;
             }
             cpu.QueueTerminalInput((byte)ch);
@@ -96,6 +100,7 @@ public sealed class Tui
 {
     readonly Cpu6 cpu;
     readonly StringBuilder term = new StringBuilder();
+    readonly StringBuilder cookedInput = new StringBuilder();
     readonly ushort[] lastPairs = new ushort[8];
     ushort lastPc;
     ushort memAt;
@@ -110,9 +115,10 @@ public sealed class Tui
     string[] frame = Array.Empty<string>();
     int frameWidth, frameHeight;
 
-    public Tui(Cpu6 cpu)
+    public Tui(Cpu6 cpu, bool startRunning = true)
     {
         this.cpu = cpu;
+        running = startRunning;
         memAt = cpu.PC;
         resetPc = cpu.PC;
         Snapshot();
@@ -220,9 +226,33 @@ public sealed class Tui
 
     void SendTerminalKey(ConsoleKeyInfo k)
     {
+        // COMMAND is line-oriented and its tiny parser dispatches on the first
+        // character.  Do local cooking there so "s<backspace>.sta" reaches cvit
+        // as just ".sta" instead of being rejected before backspace arrives.
+        if (cpu.CvitMode == "COMMAND")
+        {
+            if (k.Key == ConsoleKey.Enter)
+            {
+                foreach (char ch in cookedInput.ToString()) cpu.QueueTerminalInput((byte)ch);
+                cpu.QueueTerminalInput((byte)'\r');
+                cookedInput.Clear();
+                return;
+            }
+            if (k.Key == ConsoleKey.Backspace) { if (cookedInput.Length > 0) cookedInput.Length--; return; }
+            if (k.Key == ConsoleKey.Escape) { cookedInput.Clear(); return; }
+            if (!char.IsControl(k.KeyChar)) cookedInput.Append(k.KeyChar);
+            return;
+        }
+        if ((k.Modifiers & ConsoleModifiers.Alt) != 0) cpu.QueueTerminalInput(0x1B);
+        if ((k.Modifiers & ConsoleModifiers.Control) != 0 && k.Key >= ConsoleKey.A && k.Key <= ConsoleKey.Z)
+        {
+            cpu.QueueTerminalInput((byte)(k.Key - ConsoleKey.A + 1));
+            return;
+        }
         if (!char.IsControl(k.KeyChar)) cpu.QueueTerminalInput((byte)k.KeyChar);
         else if (k.Key == ConsoleKey.Enter) cpu.QueueTerminalInput((byte)'\r');
         else if (k.Key == ConsoleKey.Backspace) cpu.QueueTerminalInput(0x08);
+        else if (k.Key == ConsoleKey.Tab) cpu.QueueTerminalInput(0x09);
         else if (k.Key == ConsoleKey.Escape) cpu.QueueTerminalInput(0x1B);
     }
 
@@ -280,8 +310,41 @@ public sealed class Tui
         Console.ResetColor();
 
         DrawTerminal(0, 2, w, Math.Max(1, h - 3));
+        DrawParserOverlay(w, h);
         DrawButtons(0, h - 1, w);
         Snapshot();
+    }
+
+    void DrawParserOverlay(int screenWidth, int screenHeight)
+    {
+        int width = Math.Min(46, Math.Max(32, screenWidth / 2));
+        int x = Math.Max(0, screenWidth - width);
+        int y = 2;
+        if (screenHeight < y + 6) return;
+        string[] lines = new[]
+        {
+            BoxTitle(" cvit parser ", width),
+            Pad("mode   " + cpu.CvitMode, width),
+            Pad("prefix " + cpu.CvitPrefixDisplay, width),
+            Pad("file   " + cpu.CvitActiveFileDisplay, width),
+            Pad("console " + CurrentConsoleLine(), width),
+            Pad("edit    " + cookedInput, width),
+            Pad("buffer  " + cpu.CommandLineBufferText, width),
+            Pad("key     " + cpu.LastTerminalKeyDisplay, width),
+        };
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.BackgroundColor = ConsoleColor.DarkBlue;
+        for (int i = 0; i < lines.Length; i++) Put(x, y + i, lines[i]);
+        Console.ResetColor();
+    }
+
+    string CurrentConsoleLine()
+    {
+        string s = term.ToString().Replace("\r", "");
+        int i = s.LastIndexOf('\n');
+        string line = i >= 0 ? s.Substring(i + 1) : s;
+        if (line.Length > 32) line = line.Substring(line.Length - 32);
+        return line;
     }
 
     void DrawButtons(int x, int y, int width)
@@ -530,7 +593,9 @@ public sealed class Tui
     {
         if (width <= 0 || height <= 0) return;
         Put(x, y-1, BoxTitle(" Console MMIO F201 ", width));
-        string[] lines = term.ToString().Replace("\r", "").Split('\n');
+        string display = term.ToString();
+        if (cpu.CvitMode == "COMMAND" && cookedInput.Length != 0) display += cookedInput.ToString();
+        string[] lines = display.Replace("\r", "").Split('\n');
         int start = Math.Max(0, lines.Length - height);
         for (int i = 0; i < height; i++)
         {
@@ -633,14 +698,23 @@ public sealed class CvitFileSystem
         this.save = save;
     }
 
-    public bool TryReadTextMember(string name, out string text)
+    public bool TryReadMember(string name, out byte[] data)
     {
-        text = "";
+        data = Array.Empty<byte>();
         if (!TryFindMember(name, out int page, out int capacity)) return false;
         int offset = MemberOffset(page);
         int end = capacity;
         while (end > 0 && (image[offset + end - 1] == 0 || image[offset + end - 1] == 0x20)) end--;
-        text = Encoding.ASCII.GetString(image, offset, end);
+        data = new byte[end];
+        Buffer.BlockCopy(image, offset, data, 0, end);
+        return true;
+    }
+
+    public bool TryReadTextMember(string name, out string text)
+    {
+        text = "";
+        if (!TryReadMember(name, out byte[] data)) return false;
+        text = Encoding.ASCII.GetString(data);
         return true;
     }
 
@@ -649,7 +723,7 @@ public sealed class CvitFileSystem
         error = "";
         if (!TryFindMember(name, out int page, out int capacity))
         {
-            if (!createIfMissing || !CreateFixedMember(name)) { error = "?NO FILE"; return false; }
+            if (!createIfMissing || !CreateFixedMember(name, "TXT")) { error = "?NO FILE"; return false; }
             if (!TryFindMember(name, out page, out capacity)) { error = "?NO FILE"; return false; }
         }
         byte[] data = Encoding.ASCII.GetBytes(text);
@@ -661,7 +735,7 @@ public sealed class CvitFileSystem
         return true;
     }
 
-    public bool CreateFixedMember(string name)
+    public bool CreateFixedMember(string name, string type = "TXT")
     {
         if (String.IsNullOrWhiteSpace(name) || name.Length > MemberNameLength) return false;
         if (TryFindMember(name, out _, out _)) return true;
@@ -682,7 +756,7 @@ public sealed class CvitFileSystem
         int newOff = imageOffsetForSector(newSector);
         if (!RangeOk(newOff, sectorSize)) return false;
 
-        WriteDirectoryRow(dir + term, name, newPage);
+        WriteDirectoryRow(dir + term, name, newPage, TypeCode(type));
         image[dir + term + DirectoryRowSize] = 0x84;
         image[dir + term + DirectoryRowSize + 1] = 0x8D;
 
@@ -692,6 +766,20 @@ public sealed class CvitFileSystem
         AppendSystemUalSector(newSector);
         save();
         return true;
+    }
+
+    public IReadOnlyList<(string Name, string Type)> ListMembers()
+    {
+        int dir = imageOffsetForSector(SystemDataSector);
+        if (!RangeOk(dir, sectorSize)) return Array.Empty<(string, string)>();
+        var entries = new List<(string Name, string Type)>();
+        foreach (var entry in DirectoryEntries(dir)) entries.Add((entry.Name, TypeName(entry.Type)));
+        return entries;
+    }
+
+    public bool LooksLikeSystemVolume()
+    {
+        return TryFindMember("KERNEL", out _, out _) && TryFindMember("COMMAND", out _, out _);
     }
 
     public bool TryFindMember(string name, out int page, out int capacity)
@@ -715,23 +803,26 @@ public sealed class CvitFileSystem
     int MemberOffset(int page) => imageOffsetForSector(SystemDataSector + page / 2) + (page & 1) * PageSize;
     bool RangeOk(int offset, int count) => offset >= 0 && offset + count <= image.Length;
 
-    IEnumerable<(string Name, int Page)> DirectoryEntries(int dir)
+    IEnumerable<(string Name, int Page, byte Type)> DirectoryEntries(int dir)
     {
         for (int row = DirectoryFirstRow; row < sectorSize; row += DirectoryRowSize)
         {
             if (image[dir + row] == 0x84 && image[dir + row + 1] == 0x8D) yield break;
-            yield return (DecodeMemberName(dir + row), image[dir + row + 10] + Math.Max(0, image[dir + row + 12] - 0x08) * 128);
+            yield return (DecodeMemberName(dir + row), image[dir + row + 10] + Math.Max(0, image[dir + row + 12] - 0x08) * 128, image[dir + row + 13]);
         }
     }
 
-    void WriteDirectoryRow(int offset, string name, int page)
+    static byte TypeCode(string type) => String.Equals(type, "TXT", StringComparison.OrdinalIgnoreCase) ? (byte)0x04 : (byte)0x14;
+    static string TypeName(byte type) => type == 0x04 ? "TXT" : "SYS";
+
+    void WriteDirectoryRow(int offset, string name, int page, byte type)
     {
         for (int i = 0; i < MemberNameLength; i++)
             image[offset + i] = (byte)(((i < name.Length ? name[i] : ' ') & 0x7F) | 0x80);
         image[offset + 10] = (byte)(page % 128);
         image[offset + 11] = 0;
         image[offset + 12] = (byte)(0x08 + page / 128);
-        image[offset + 13] = 0x14;
+        image[offset + 13] = type;
         image[offset + 14] = 0;
         image[offset + 15] = 0;
     }
@@ -784,14 +875,19 @@ public sealed class Cpu6
     readonly byte[] mem = new byte[65536];
     readonly Queue<byte> terminalInput = new Queue<byte>();
     byte flags, ipl, op;
+    byte lastTerminalKey;
+    bool haveLastTerminalKey;
     bool debugDepositActive;
     ushort debugDepositAddr;
     readonly StringBuilder debugDepositInput = new StringBuilder();
     bool cedActive;
+    bool keyTraceActive;
     readonly StringBuilder cedInput = new StringBuilder();
     readonly SortedDictionary<int, string> cedLines = new SortedDictionary<int, string>();
     string cedActiveFile = "TEST";
-    string cedActiveDisplay = "/SYSTEM/TEST";
+    string cedActiveDisplay = "H0:/SYSTEM/TEST";
+    int currentCvitDevice;
+    string currentCvitPrefix = "/SYSTEM";
     readonly Stack<InterruptFrame> interruptStack = new Stack<InterruptFrame>();
     ushort dmaAddr, dmaCount;
     byte dmaMode;
@@ -978,13 +1074,14 @@ public sealed class Cpu6
 
     public void Step()
     {
-        if (debugDepositActive || cedActive)
+        if (debugDepositActive || cedActive || keyTraceActive)
         {
             if (terminalInput.Count != 0)
             {
                 byte b = terminalInput.Dequeue();
                 if (debugDepositActive) DebugDepositKey(b);
-                else CedKey(b);
+                else if (cedActive) CedKey(b);
+                else KeyTraceKey(b);
             }
             return;
         }
@@ -1146,6 +1243,11 @@ public sealed class Cpu6
         if (svc == 0x44) { StartDebugDeposit(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x50) { StartCed(); return; }
         if (svc == 0x51) { TypeSystemMember(); return; }
+        if (svc == 0x52) { CatalogSystem(); return; }
+        if (svc == 0x53) { PrintCvitStatus(); return; }
+        if (svc == 0x54) { StartKeyTrace(); return; }
+        if (svc == 0x55) { PrefixCommand(); return; }
+        if (svc == 0x56) { RunSystemMember(); return; }
         Unknown();
     }
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
@@ -1177,6 +1279,18 @@ public sealed class Cpu6
         if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
         if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
         return -1;
+    }
+    void StartKeyTrace()
+    {
+        keyTraceActive = true;
+        DebugOut("\r\nKEY TRACE: press keys; ESC exits.\r\n");
+    }
+    void KeyTraceKey(byte raw)
+    {
+        byte ch = (byte)(raw & 0x7F);
+        if (ch == 0x1B) { keyTraceActive = false; DebugOut("\r\nLEAVING KEY TRACE\r\n"); return; }
+        string name = ch switch { 0x08 => "BS", 0x09 => "TAB", 0x0A => "LF", 0x0D => "CR", 0x7F => "DEL", _ => ch >= 32 && ch < 127 ? ((char)ch).ToString() : "CTRL" };
+        DebugOut($"${ch:X2} {name}\r\n");
     }
     void StartDebugDeposit(ushort addr)
     {
@@ -1230,41 +1344,123 @@ public sealed class Cpu6
             }
         }
     }
-    CvitFileSystem CvitFsForDisplay(string display)
+    CvitFileSystem CvitFsForDevice(int unit) => unit == 0 ? (cvitFileSystems[0] ?? cvitFs) : cvitFileSystems[unit];
+    (int Device, string Prefix, string Member, string Display) ParseCvitPath(string spec, string defaultMember, params string[] commandPrefixes)
     {
-        string d = RemoveWhitespace(display).ToUpperInvariant();
-        int unit = d.StartsWith("H1:", StringComparison.Ordinal) ? 1 : 0;
-        return cvitFileSystems[unit] ?? (unit == 0 ? cvitFs : null);
-    }
-    (string Member, string Display) ParseCvitFileSpec(string spec, string defaultDisplay, params string[] commandPrefixes)
-    {
-        string display = RemoveWhitespace(spec).ToUpperInvariant();
-        foreach (string prefix in commandPrefixes)
-            if (display.StartsWith(prefix, StringComparison.Ordinal)) { display = display.Substring(prefix.Length); break; }
-        if (display.Length == 0) display = defaultDisplay;
-        string member = display;
-        int colon = member.LastIndexOf(':');
-        if (colon >= 0) member = member.Substring(colon + 1);
-        int slash = member.LastIndexOf('/');
-        if (slash >= 0) member = member.Substring(slash + 1);
-        if (member.Length == 0)
+        string s = RemoveWhitespace(spec).ToUpperInvariant();
+        foreach (string cmdPrefix in commandPrefixes)
+            if (s.StartsWith(cmdPrefix, StringComparison.Ordinal)) { s = s.Substring(cmdPrefix.Length); break; }
+        int dev = currentCvitDevice;
+        int colon = s.IndexOf(':');
+        if (colon >= 0)
         {
-            member = defaultDisplay;
-            int dslash = member.LastIndexOf('/');
-            if (dslash >= 0) member = member.Substring(dslash + 1);
+            string d = s.Substring(0, colon);
+            if (d == "H0") dev = 0; else if (d == "H1") dev = 1;
+            s = s.Substring(colon + 1);
+        }
+        string prefix = currentCvitPrefix;
+        string member = defaultMember;
+        if (s.Length != 0)
+        {
+            if (s.StartsWith("/", StringComparison.Ordinal))
+            {
+                int slash = s.LastIndexOf('/');
+                prefix = slash <= 0 ? "/" : s.Substring(0, slash);
+                member = slash == s.Length - 1 ? "" : s.Substring(slash + 1);
+            }
+            else if (s.Contains('/'))
+            {
+                int slash = s.LastIndexOf('/');
+                prefix = "/" + s.Substring(0, slash);
+                member = slash == s.Length - 1 ? "" : s.Substring(slash + 1);
+            }
+            else member = s;
         }
         if (member.Length > 10) member = member.Substring(0, 10);
-        return (member, display);
+        string display = $"H{dev}:{prefix}" + (String.IsNullOrEmpty(member) ? "" : "/" + member);
+        return (dev, prefix, member, display);
     }
+    bool IsSystemPrefix(string prefix) => String.Equals(prefix, "/SYSTEM", StringComparison.OrdinalIgnoreCase) || prefix == "/";
     void TypeSystemMember()
     {
-        var parsed = ParseCvitFileSpec(ReadDebugLine(), "WELCOME", "YPE", "TYPE");
-        CvitFileSystem fs = CvitFsForDisplay(parsed.Display);
+        var parsed = ParseCvitPath(ReadDebugLine(), "WELCOME", "YPE", "TYPE");
+        if (!IsSystemPrefix(parsed.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
+        CvitFileSystem fs = CvitFsForDevice(parsed.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
         if (!fs.TryReadTextMember(parsed.Member, out string text)) { DebugOut("?NO FILE\r\n"); return; }
         DebugOut("\r\n");
         foreach (char ch in text) Write8(0xF201, ch);
         DebugOut("\r\n");
+    }
+    void RunSystemMember()
+    {
+        var parsed = ParseCvitPath(ReadDebugLine(), "", "UN", "RUN");
+        if (String.IsNullOrEmpty(parsed.Member)) { DebugOut("?RUN WHAT\r\n"); return; }
+        if (!IsSystemPrefix(parsed.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
+        CvitFileSystem fs = CvitFsForDevice(parsed.Device);
+        if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
+        if (!fs.TryReadMember(parsed.Member, out byte[] data)) { DebugOut("?NO FILE\r\n"); return; }
+        if (0x0100 + data.Length > mem.Length) { DebugOut("?TOO BIG\r\n"); return; }
+        Array.Clear(mem, 0x0100, Math.Min(0x1000, mem.Length - 0x0100));
+        Buffer.BlockCopy(data, 0, mem, 0x0100, data.Length);
+        PC = 0x0100;
+    }
+    void CatalogSystem()
+    {
+        var parsed = ParseCvitPath(ReadDebugLine(), "", "ATALOG", "CATALOG", "AT", "CAT");
+        if (!IsSystemPrefix(parsed.Prefix)) { DebugOut("\r\n?NO LIBRARY\r\n"); return; }
+        CvitFileSystem fs = CvitFsForDevice(parsed.Device);
+        if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
+        if (!fs.LooksLikeSystemVolume()) { DebugOut("\r\n?NOT CVIT VOLUME\r\n"); return; }
+        DebugOut("\r\nNAME       TYPE\r\n");
+        foreach (var entry in fs.ListMembers())
+            DebugOut($"{entry.Name.PadRight(10)} {entry.Type}\r\n");
+    }
+    void PrefixCommand()
+    {
+        string arg = ReadDebugLine();
+        string s = RemoveWhitespace(arg).ToUpperInvariant();
+        foreach (string prefix in new[] { "REFIX", "PREFIX" })
+            if (s.StartsWith(prefix, StringComparison.Ordinal)) { s = s.Substring(prefix.Length); break; }
+        if (s.Length == 0)
+        {
+            DebugOut($"\r\nH{currentCvitDevice}:{currentCvitPrefix}\r\n");
+            return;
+        }
+        int dev = currentCvitDevice;
+        int colon = s.IndexOf(':');
+        if (colon >= 0)
+        {
+            string d = s.Substring(0, colon);
+            if (d == "H0") dev = 0; else if (d == "H1") dev = 1;
+            s = s.Substring(colon + 1);
+        }
+        if (s.Length == 0) s = currentCvitPrefix;
+        if (!s.StartsWith("/", StringComparison.Ordinal)) s = "/" + s;
+        currentCvitDevice = dev;
+        currentCvitPrefix = s;
+        DebugOut($"\r\nPREFIX H{currentCvitDevice}:{currentCvitPrefix}\r\n");
+    }
+    void PrintCvitStatus()
+    {
+        DebugOut("\r\nCPU6\r\n");
+        DebugOut("MEM  128K\r\n\r\n");
+        DebugOut("DISKS\r\n");
+        DebugOut($" F0:  8\" FLOPPY   {(floppyImage == null ? "EMPTY" : "READY")}\r\n");
+        DebugOut(" F1:  8\" FLOPPY   EMPTY\r\n");
+        DebugOut(HawkStatusLine(0));
+        DebugOut(HawkStatusLine(1));
+        DebugOut("\r\nTERMINALS\r\n");
+        DebugOut(" T0:  CONSOLE     9600\r\n");
+        DebugOut(" T1:  MUX1        OFFLINE\r\n");
+        DebugOut(" T2:  MUX2        OFFLINE\r\n");
+        DebugOut(" T3:  MUX3        OFFLINE\r\n");
+    }
+    string HawkStatusLine(int unit)
+    {
+        if (unit < 0 || unit >= hawkImages.Length || hawkImages[unit] == null) return $" H{unit}:  HAWK        EMPTY\r\n";
+        string kind = cvitFileSystems[unit] != null && cvitFileSystems[unit].LooksLikeSystemVolume() ? "CVIT" : "FOREIGN";
+        return $" H{unit}:  HAWK        READY  {kind}\r\n";
     }
     void StartCed()
     {
@@ -1290,7 +1486,7 @@ public sealed class Cpu6
     }
     void SetCedActiveFile(string spec)
     {
-        var parsed = ParseCvitFileSpec(spec, "/SYSTEM/TEST", "ED", "CED");
+        var parsed = ParseCvitPath(spec, "TEST", "ED", "CED");
         cedActiveFile = parsed.Member;
         cedActiveDisplay = parsed.Display;
     }
@@ -1367,7 +1563,9 @@ public sealed class Cpu6
     void CedLoadActiveFile()
     {
         cedLines.Clear();
-        CvitFileSystem fs = CvitFsForDisplay(cedActiveDisplay);
+        var path = ParseCvitPath(cedActiveDisplay, cedActiveFile);
+        if (!IsSystemPrefix(path.Prefix)) return;
+        CvitFileSystem fs = CvitFsForDevice(path.Device);
         if (fs == null || !fs.TryReadTextMember(cedActiveFile, out string text)) return;
         int lineNo = 1;
         var line = new StringBuilder();
@@ -1387,7 +1585,9 @@ public sealed class Cpu6
     }
     void CedWriteActiveFile()
     {
-        CvitFileSystem fs = CvitFsForDisplay(cedActiveDisplay);
+        var path = ParseCvitPath(cedActiveDisplay, cedActiveFile);
+        if (!IsSystemPrefix(path.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
+        CvitFileSystem fs = CvitFsForDevice(path.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
         var text = new StringBuilder();
         foreach (var kv in cedLines) text.Append(kv.Value).Append("\r\n");
@@ -2003,10 +2203,49 @@ public sealed class Cpu6
     public int HawkCylinder { get { return (hawkSectorAddress >> 5) & 0x7FF; } }
     public int HawkHead { get { return (hawkSectorAddress >> 4) & 1; } }
     public int HawkSector { get { return hawkSectorAddress & 0x0F; } }
+    public string CvitMode
+    {
+        get
+        {
+            if (debugDepositActive) return "DEBUG DEPOSIT";
+            if (cedActive) return "CED";
+            if (keyTraceActive) return "KEY TRACE";
+            return "COMMAND";
+        }
+    }
+    public string CvitPrefixDisplay { get { return $"H{currentCvitDevice}:{currentCvitPrefix}"; } }
+    public string CvitActiveFileDisplay { get { return cedActiveDisplay; } }
+    public string CommandLineBufferText
+    {
+        get
+        {
+            var s = new StringBuilder();
+            for (int i = 0; i < 32; i++)
+            {
+                byte ch = (byte)(mem[(ushort)(CommandLineBuffer + i)] & 0x7F);
+                if (ch == 0 || ch == '\r' || ch == '\n') break;
+                s.Append(ch >= 32 && ch < 127 ? (char)ch : '.');
+            }
+            return s.ToString();
+        }
+    }
+    public string LastTerminalKeyDisplay
+    {
+        get
+        {
+            if (!haveLastTerminalKey) return "";
+            byte ch = (byte)(lastTerminalKey & 0x7F);
+            string name = ch switch { 0x08 => "BS", 0x09 => "TAB", 0x0A => "LF", 0x0D => "CR", 0x1B => "ESC", 0x7F => "DEL", _ => ch >= 32 && ch < 127 ? ((char)ch).ToString() : "CTRL" };
+            return $"${ch:X2} {name}";
+        }
+    }
     public void QueueTerminalInput(byte b)
     {
+        lastTerminalKey = b;
+        haveLastTerminalKey = true;
         if (debugDepositActive) DebugDepositKey(b);
         else if (cedActive) CedKey(b);
+        else if (keyTraceActive) KeyTraceKey(b);
         else terminalInput.Enqueue(b);
     }
 }
