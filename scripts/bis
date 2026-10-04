@@ -1,0 +1,8 @@
+#
+DISK_CVIT=out/os.img
+DISK_DISK6=disks/opsys.img
+dotnet run -- \
+    --boot-rom roms/bootstrap_unscrambled.bin \
+    --hawk0 $DISK_CVIT \
+    --hawk1 $DISK_DISK6 \
+

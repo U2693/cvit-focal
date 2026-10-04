@@ -792,6 +792,15 @@ public sealed class CvitFileSystem
         return entries;
     }
 
+    public IReadOnlyList<(string Name, string Type)> ListRootEntries()
+    {
+        int dir = imageOffsetForSector(0x10);
+        if (!RangeOk(dir, sectorSize)) return Array.Empty<(string, string)>();
+        var entries = new List<(string Name, string Type)>();
+        foreach (var entry in DirectoryEntries(dir)) entries.Add((entry.Name, TypeName(entry.Type)));
+        return entries;
+    }
+
     public bool LooksLikeSystemVolume()
     {
         return TryFindMember("KERNEL", out _, out _) && TryFindMember("COMMAND", out _, out _);
@@ -828,7 +837,7 @@ public sealed class CvitFileSystem
     }
 
     static byte TypeCode(string type) => String.Equals(type, "TXT", StringComparison.OrdinalIgnoreCase) ? (byte)0x04 : (byte)0x14;
-    static string TypeName(byte type) => type == 0x04 ? "TXT" : "SYS";
+    static string TypeName(byte type) => type == 0x04 ? "TXT" : type == 0x15 ? "LIB" : "SYS";
 
     void WriteDirectoryRow(int offset, string name, int page, byte type)
     {
@@ -1438,13 +1447,18 @@ public sealed class Cpu6
     }
     void CatalogSystem()
     {
-        var parsed = ParseCvitPath(ReadDebugLine(), "", "ATALOG", "CATALOG", "AT", "CAT");
-        if (!IsSystemPrefix(parsed.Prefix)) { DebugOut("\r\n?NO LIBRARY\r\n"); return; }
+        string line = ReadDebugLine();
+        string s = RemoveWhitespace(line).ToUpperInvariant();
+        foreach (string prefix in new[] { "ATALOG", "CATALOG", "AT", "CAT" })
+            if (s.StartsWith(prefix, StringComparison.Ordinal)) { s = s.Substring(prefix.Length); break; }
+        bool rootCatalog = s == "/" || s == "H0:" || s == "H1:" || s == "H0:/" || s == "H1:/";
+        var parsed = ParseCvitPath(line, "", "ATALOG", "CATALOG", "AT", "CAT");
         CvitFileSystem fs = CvitFsForDevice(parsed.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
         if (!fs.LooksLikeSystemVolume()) { DebugOut("\r\n?NOT CVIT VOLUME\r\n"); return; }
+        if (!rootCatalog && !IsSystemPrefix(parsed.Prefix)) { DebugOut("\r\n?NO LIBRARY\r\n"); return; }
         DebugOut("\r\nNAME       TYPE\r\n");
-        foreach (var entry in fs.ListMembers())
+        foreach (var entry in rootCatalog ? fs.ListRootEntries() : fs.ListMembers())
             DebugOut($"{entry.Name.PadRight(10)} {entry.Type}\r\n");
     }
     void PrefixCommand()

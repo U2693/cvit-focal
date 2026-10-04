@@ -113,7 +113,13 @@ def build(members, label, load, entry, stride):
     ent[11:13] = (0).to_bytes(2, "big")          # UAL-relative map sector 0
     ent[13] = 0x15
     vol[16:32] = ent
-    vol[32], vol[33] = 0x84, 0x8D
+    ent = vol[32:48]
+    ent[0:10] = hi("HELP")
+    ent[10] = 1                                  # reserved future map index
+    ent[11:13] = (0).to_bytes(2, "big")
+    ent[13] = 0x15
+    vol[32:48] = ent
+    vol[48], vol[49] = 0x84, 0x8D
 
     # --- allocation map for SYSTEM: one sector per extent, with continuations
     per = (PAYLOAD - 6) // 3
