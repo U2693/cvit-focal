@@ -8,7 +8,7 @@ sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / "scripts"))
 
 from cvit.constants import COMMAND_LOAD, DATA
-from cvit.image import collect_members, member_pages, pack_hawk_image, write_system_members
+from cvit.image import collect_library_members, collect_members, member_pages, pack_hawk_image, write_system_members
 from cvit.members import generated_members
 from cvit.src.command import build_command
 from cvit.src.kernel import build_kernel
@@ -53,7 +53,8 @@ def build_image():
     generated, welcome_sector, command_sector, command_sectors = build_guest_members()
     write_system_members(SYSTEM_ROOT, generated)
     members = collect_members(SYSTEM_ROOT, generated)
-    pack_hawk_image(root, members, root / "out/os.img")
+    help_members = collect_library_members(HELP_ROOT)
+    pack_hawk_image(root, members, root / "out/os.img", help_members=help_members)
     return members, welcome_sector, command_sector, command_sectors
 
 

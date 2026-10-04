@@ -695,6 +695,8 @@ public sealed class CvitFileSystem
     public const int PageSize = 200;
     public const int SystemDataSector = 0x20;
     public const int SystemUalSector = 0x12;
+    public const int HelpDataSector = 0x100;
+    public const int HelpUalSector = 0x18;
     const int DirectoryRowSize = 16;
     const int DirectoryFirstRow = 16;
     const int DirectoryPageBytes = PageSize;
@@ -713,11 +715,14 @@ public sealed class CvitFileSystem
         this.save = save;
     }
 
-    public bool TryReadMember(string name, out byte[] data)
+    public bool TryReadMember(string name, out byte[] data) => TryReadMember("/SYSTEM", name, out data);
+
+    public bool TryReadMember(string prefix, string name, out byte[] data)
     {
         data = Array.Empty<byte>();
-        if (!TryFindMember(name, out int page, out int capacity)) return false;
-        int offset = MemberOffset(page);
+        if (!TryFindMember(prefix, name, out int page, out int capacity)) return false;
+        if (!TryLibrary(prefix, out int dataSector, out _)) return false;
+        int offset = MemberOffset(dataSector, page);
         int end = capacity;
         while (end > 0 && (image[offset + end - 1] == 0 || image[offset + end - 1] == 0x20)) end--;
         data = new byte[end];
@@ -725,36 +730,44 @@ public sealed class CvitFileSystem
         return true;
     }
 
-    public bool TryReadTextMember(string name, out string text)
+    public bool TryReadTextMember(string name, out string text) => TryReadTextMember("/SYSTEM", name, out text);
+
+    public bool TryReadTextMember(string prefix, string name, out string text)
     {
         text = "";
-        if (!TryReadMember(name, out byte[] data)) return false;
+        if (!TryReadMember(prefix, name, out byte[] data)) return false;
         text = Encoding.ASCII.GetString(data);
         return true;
     }
 
-    public bool WriteTextMember(string name, string text, bool createIfMissing, out string error)
+    public bool WriteTextMember(string name, string text, bool createIfMissing, out string error) => WriteTextMember("/SYSTEM", name, text, createIfMissing, out error);
+
+    public bool WriteTextMember(string prefix, string name, string text, bool createIfMissing, out string error)
     {
         error = "";
-        if (!TryFindMember(name, out int page, out int capacity))
+        if (!TryFindMember(prefix, name, out int page, out int capacity))
         {
-            if (!createIfMissing || !CreateFixedMember(name, "TXT")) { error = "?NO FILE"; return false; }
-            if (!TryFindMember(name, out page, out capacity)) { error = "?NO FILE"; return false; }
+            if (!createIfMissing || !CreateFixedMember(prefix, name, "TXT")) { error = "?NO FILE"; return false; }
+            if (!TryFindMember(prefix, name, out page, out capacity)) { error = "?NO FILE"; return false; }
         }
+        if (!TryLibrary(prefix, out int dataSector, out _)) { error = "?NO LIBRARY"; return false; }
         byte[] data = Encoding.ASCII.GetBytes(text);
         if (data.Length > capacity) { error = "?TOO BIG"; return false; }
-        int offset = MemberOffset(page);
+        int offset = MemberOffset(dataSector, page);
         Array.Fill<byte>(image, 0x20, offset, capacity);
         Buffer.BlockCopy(data, 0, image, offset, data.Length);
         save();
         return true;
     }
 
-    public bool CreateFixedMember(string name, string type = "TXT")
+    public bool CreateFixedMember(string name, string type = "TXT") => CreateFixedMember("/SYSTEM", name, type);
+
+    public bool CreateFixedMember(string prefix, string name, string type = "TXT")
     {
         if (String.IsNullOrWhiteSpace(name) || name.Length > MemberNameLength) return false;
-        if (TryFindMember(name, out _, out _)) return true;
-        int dir = imageOffsetForSector(SystemDataSector);
+        if (!TryLibrary(prefix, out int dataSector, out int ualSector)) return false;
+        if (TryFindMember(prefix, name, out _, out _)) return true;
+        int dir = imageOffsetForSector(dataSector);
         if (!RangeOk(dir, sectorSize)) return false;
         int term = -1;
         for (int row = DirectoryFirstRow; row < DirectoryPageBytes; row += DirectoryRowSize)
@@ -763,10 +776,10 @@ public sealed class CvitFileSystem
         }
         if (term < 0 || term + DirectoryRowSize + 1 >= DirectoryPageBytes) return false;
 
-        int ual = imageOffsetForSector(SystemUalSector);
+        int ual = imageOffsetForSector(ualSector);
         if (!RangeOk(ual, sectorSize)) return false;
         int nsec = ((image[ual] << 8) | image[ual + 1]) + 1;
-        int newSector = SystemDataSector + nsec;
+        int newSector = dataSector + nsec;
         int newPage = nsec * 2;
         int newOff = imageOffsetForSector(newSector);
         if (!RangeOk(newOff, sectorSize)) return false;
@@ -778,14 +791,17 @@ public sealed class CvitFileSystem
         Array.Fill<byte>(image, 0x20, newOff, sectorSize);
         image[ual] = (byte)(nsec >> 8);
         image[ual + 1] = (byte)nsec;
-        AppendSystemUalSector(newSector);
+        AppendUalSector(ualSector, newSector);
         save();
         return true;
     }
 
-    public IReadOnlyList<(string Name, string Type)> ListMembers()
+    public IReadOnlyList<(string Name, string Type)> ListMembers() => ListMembers("/SYSTEM");
+
+    public IReadOnlyList<(string Name, string Type)> ListMembers(string prefix)
     {
-        int dir = imageOffsetForSector(SystemDataSector);
+        if (!TryLibrary(prefix, out int dataSector, out _)) return Array.Empty<(string, string)>();
+        int dir = imageOffsetForSector(dataSector);
         if (!RangeOk(dir, sectorSize)) return Array.Empty<(string, string)>();
         var entries = new List<(string Name, string Type)>();
         foreach (var entry in DirectoryEntries(dir)) entries.Add((entry.Name, TypeName(entry.Type)));
@@ -806,12 +822,17 @@ public sealed class CvitFileSystem
         return TryFindMember("KERNEL", out _, out _) && TryFindMember("COMMAND", out _, out _);
     }
 
-    public bool TryFindMember(string name, out int page, out int capacity)
+    public bool TryFindMember(string name, out int page, out int capacity) => TryFindMember("/SYSTEM", name, out page, out capacity);
+
+    public bool TryFindMember(string prefix, string name, out int page, out int capacity)
     {
         page = 0; capacity = 0;
-        int dir = imageOffsetForSector(SystemDataSector);
-        if (!RangeOk(dir, sectorSize)) return false;
-        int found = -1, next = Int32.MaxValue;
+        if (!TryLibrary(prefix, out int dataSector, out int ualSector)) return false;
+        int dir = imageOffsetForSector(dataSector);
+        int ual = imageOffsetForSector(ualSector);
+        if (!RangeOk(dir, sectorSize) || !RangeOk(ual, sectorSize)) return false;
+        int libraryPages = (((image[ual] << 8) | image[ual + 1]) + 1) * 2;
+        int found = -1, next = libraryPages;
         foreach (var entry in DirectoryEntries(dir))
         {
             if (String.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase)) found = entry.Page;
@@ -820,11 +841,21 @@ public sealed class CvitFileSystem
         foreach (var entry in DirectoryEntries(dir))
             if (entry.Page > found && entry.Page < next) next = entry.Page;
         page = found;
-        capacity = (next == Int32.MaxValue ? 2 : next - found) * PageSize;
+        capacity = (next - found) * PageSize;
         return capacity > 0;
     }
 
-    int MemberOffset(int page) => imageOffsetForSector(SystemDataSector + page / 2) + (page & 1) * PageSize;
+    static bool IsHelpPrefix(string prefix) => String.Equals(prefix, "/HELP", StringComparison.OrdinalIgnoreCase);
+    static bool IsSystemPrefixName(string prefix) => String.Equals(prefix, "/SYSTEM", StringComparison.OrdinalIgnoreCase) || prefix == "/";
+    bool TryLibrary(string prefix, out int dataSector, out int ualSector)
+    {
+        if (IsHelpPrefix(prefix)) { dataSector = HelpDataSector; ualSector = HelpUalSector; return true; }
+        if (IsSystemPrefixName(prefix)) { dataSector = SystemDataSector; ualSector = SystemUalSector; return true; }
+        dataSector = ualSector = 0;
+        return false;
+    }
+
+    int MemberOffset(int dataSector, int page) => imageOffsetForSector(dataSector + page / 2) + (page & 1) * PageSize;
     bool RangeOk(int offset, int count) => offset >= 0 && offset + count <= image.Length;
 
     IEnumerable<(string Name, int Page, byte Type)> DirectoryEntries(int dir)
@@ -862,11 +893,11 @@ public sealed class CvitFileSystem
         return b.ToString();
     }
 
-    void AppendSystemUalSector(int sector)
+    void AppendUalSector(int ualSector, int sector)
     {
         for (int us = 0; us < 6; us++)
         {
-            int off = imageOffsetForSector(SystemUalSector + us);
+            int off = imageOffsetForSector(ualSector + us);
             int start = us == 0 ? 6 : 0;
             for (int p = start; p <= sectorSize - 3; p += 3)
             {
@@ -885,6 +916,92 @@ public sealed class CvitFileSystem
                 }
             }
         }
+    }
+}
+
+public sealed class Disk6Catalog
+{
+    readonly byte[] image;
+    readonly Func<int, int> imageOffsetForSector;
+    readonly int sectorSize;
+    static readonly string[] TypeNames = { "D", "B", "A", "C", "E", "L", "I", "S", "Q", "X", "X", "X", "X", "X", "X", " " };
+
+    public string Name { get; private set; } = "";
+    public int Code { get; private set; }
+    public int DirectorySector { get; private set; } = 0x10;
+    public int UalSector { get; private set; }
+    public string Status { get; private set; } = "";
+
+    public Disk6Catalog(byte[] image, Func<int, int> imageOffsetForSector, int sectorSize)
+    {
+        this.image = image;
+        this.imageOffsetForSector = imageOffsetForSector;
+        this.sectorSize = sectorSize;
+    }
+
+    public bool TryListRoot(out IReadOnlyList<(string Name, string Type)> entries)
+    {
+        entries = Array.Empty<(string, string)>();
+        if (!DecodeVolume()) return false;
+        int dir = imageOffsetForSector(DirectorySector);
+        if (!RangeOk(dir, sectorSize)) return false;
+        var list = new List<(string Name, string Type)>();
+        int row = 16;
+        for (int guard = 0; guard < 800 && DirectorySector + row / sectorSize < image.Length / Math.Max(1, sectorSize); guard++, row += 16)
+        {
+            int off = imageOffsetForSector(DirectorySector + row / sectorSize) + (row % sectorSize);
+            if (!RangeOk(off, 16)) break;
+            if (image[off] == 0x84 && image[off + 1] == 0x8D) break;
+            if (image[off] == 0 || image[off] == 0xFF) continue;
+            string name = FixedString(off, 10);
+            if (String.IsNullOrWhiteSpace(name)) continue;
+            int attr = image[off + 13] & 0x0F;
+            list.Add((name, TypeNames[attr]));
+        }
+        entries = list;
+        return list.Count != 0;
+    }
+
+    bool DecodeVolume()
+    {
+        int v = imageOffsetForSector(14);
+        if (!RangeOk(v, sectorSize)) return false;
+        int flag = U16(v + 8);
+        DirectorySector = 0x10;
+        Code = 100;
+        Status = "";
+        if (flag == 0xFFFF)
+        {
+            int key = U16(v + 6) ^ 0xFFFF;
+            key = ((key >> 1) | (key << 15)) & 0xFFFF;
+            key ^= 0x8DB1;
+            Code = key;
+            int dvo = image[v + 5];
+            int pre = (((image[v + 4] ^ dvo) << 8) | dvo) ^ 0x3CB1;
+            DirectorySector = ((pre + key) & 0xFFF) << 4;
+        }
+        else if (flag == 0xFDFD) Status = "INIT";
+        else if (flag != 0) return false;
+        int d = imageOffsetForSector(DirectorySector);
+        if (!RangeOk(d, sectorSize)) return false;
+        UalSector = U24(d + 13);
+        Name = FixedString(d, 10);
+        return UalSector != 0;
+    }
+
+    int U16(int off) => (image[off] << 8) | image[off + 1];
+    int U24(int off) => (image[off] << 16) | (image[off + 1] << 8) | image[off + 2];
+    bool RangeOk(int offset, int count) => offset >= 0 && offset + count <= image.Length;
+    string FixedString(int off, int count)
+    {
+        var b = new StringBuilder();
+        for (int i = 0; i < count; i++)
+        {
+            int c = image[off + i] & 0x7F;
+            if (c == 0) break;
+            if (c >= 32 && c < 127) b.Append((char)c);
+        }
+        return b.ToString().TrimEnd();
     }
 }
 
@@ -1421,13 +1538,14 @@ public sealed class Cpu6
         return (dev, prefix, member, display);
     }
     bool IsSystemPrefix(string prefix) => String.Equals(prefix, "/SYSTEM", StringComparison.OrdinalIgnoreCase) || prefix == "/";
+    bool IsKnownLibraryPrefix(string prefix) => IsSystemPrefix(prefix) || String.Equals(prefix, "/HELP", StringComparison.OrdinalIgnoreCase);
     void TypeSystemMember()
     {
         var parsed = ParseCvitPath(ReadDebugLine(), "WELCOME", "YPE", "TYPE");
-        if (!IsSystemPrefix(parsed.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
+        if (!IsKnownLibraryPrefix(parsed.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
         CvitFileSystem fs = CvitFsForDevice(parsed.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
-        if (!fs.TryReadTextMember(parsed.Member, out string text)) { DebugOut("?NO FILE\r\n"); return; }
+        if (!fs.TryReadTextMember(parsed.Prefix, parsed.Member, out string text)) { DebugOut("?NO FILE\r\n"); return; }
         DebugOut("\r\n");
         foreach (char ch in text) Write8(0xF201, ch);
         DebugOut("\r\n");
@@ -1453,13 +1571,31 @@ public sealed class Cpu6
             if (s.StartsWith(prefix, StringComparison.Ordinal)) { s = s.Substring(prefix.Length); break; }
         bool rootCatalog = s == "/" || s == "H0:" || s == "H1:" || s == "H0:/" || s == "H1:/";
         var parsed = ParseCvitPath(line, "", "ATALOG", "CATALOG", "AT", "CAT");
+        string catalogPrefix = parsed.Prefix;
+        if (IsSystemPrefix(parsed.Prefix) && String.Equals(parsed.Member, "SYSTEM", StringComparison.OrdinalIgnoreCase)) catalogPrefix = "/SYSTEM";
+        if (IsSystemPrefix(parsed.Prefix) && String.Equals(parsed.Member, "HELP", StringComparison.OrdinalIgnoreCase)) catalogPrefix = "/HELP";
         CvitFileSystem fs = CvitFsForDevice(parsed.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
-        if (!fs.LooksLikeSystemVolume()) { DebugOut("\r\n?NOT CVIT VOLUME\r\n"); return; }
-        if (!rootCatalog && !IsSystemPrefix(parsed.Prefix)) { DebugOut("\r\n?NO LIBRARY\r\n"); return; }
+        if (!fs.LooksLikeSystemVolume())
+        {
+            if (rootCatalog && TryCatalogDisk6(parsed.Device)) return;
+            DebugOut("\r\n?NOT CVIT VOLUME\r\n");
+            return;
+        }
+        if (!rootCatalog && !IsKnownLibraryPrefix(catalogPrefix)) { DebugOut("\r\n?NO LIBRARY\r\n"); return; }
         DebugOut("\r\nNAME       TYPE\r\n");
-        foreach (var entry in rootCatalog ? fs.ListRootEntries() : fs.ListMembers())
+        foreach (var entry in rootCatalog ? fs.ListRootEntries() : fs.ListMembers(catalogPrefix))
             DebugOut($"{entry.Name.PadRight(10)} {entry.Type}\r\n");
+    }
+    bool TryCatalogDisk6(int device)
+    {
+        if (device < 0 || device >= hawkImages.Length || hawkImages[device] == null) return false;
+        var disk = new Disk6Catalog(hawkImages[device], HawkImageOffsetForLogicalSector, HawkSectorSize);
+        if (!disk.TryListRoot(out var entries)) return false;
+        DebugOut($"\r\nDISK6 {disk.Name} CODE {disk.Code}\r\n");
+        DebugOut("NAME       TYPE\r\n");
+        foreach (var entry in entries) DebugOut($"{entry.Name.PadRight(10)} {entry.Type}\r\n");
+        return true;
     }
     void PrefixCommand()
     {
@@ -1632,9 +1768,9 @@ public sealed class Cpu6
     {
         cedLines.Clear();
         var path = ParseCvitPath(cedActiveDisplay, cedActiveFile);
-        if (!IsSystemPrefix(path.Prefix)) return;
+        if (!IsKnownLibraryPrefix(path.Prefix)) return;
         CvitFileSystem fs = CvitFsForDevice(path.Device);
-        if (fs == null || !fs.TryReadTextMember(cedActiveFile, out string text)) return;
+        if (fs == null || !fs.TryReadTextMember(path.Prefix, cedActiveFile, out string text)) return;
         int lineNo = 1;
         var line = new StringBuilder();
         for (int i = 0; i < text.Length; i++)
@@ -1654,12 +1790,12 @@ public sealed class Cpu6
     void CedWriteActiveFile()
     {
         var path = ParseCvitPath(cedActiveDisplay, cedActiveFile);
-        if (!IsSystemPrefix(path.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
+        if (!IsKnownLibraryPrefix(path.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
         CvitFileSystem fs = CvitFsForDevice(path.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
         var text = new StringBuilder();
         foreach (var kv in cedLines) text.Append(kv.Value).Append("\r\n");
-        if (!fs.WriteTextMember(cedActiveFile, text.ToString(), createIfMissing: true, out string error)) { DebugOut(error + "\r\n"); return; }
+        if (!fs.WriteTextMember(path.Prefix, cedActiveFile, text.ToString(), createIfMissing: true, out string error)) { DebugOut(error + "\r\n"); return; }
         DebugOut($"Wrote {cedActiveDisplay}\r\n");
     }
     void DebugRegs()
