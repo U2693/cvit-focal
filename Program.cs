@@ -14,6 +14,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 public static class BiscvitProgram
@@ -939,13 +940,84 @@ public sealed class Disk6Catalog
         this.sectorSize = sectorSize;
     }
 
+    struct Entry
+    {
+        public string Name;
+        public int MapSector, MapIndex, Attr, LengthSectors, Fsi;
+        public List<int> Sectors;
+        public string Type => TypeNames[Attr & 0x0F];
+    }
+
     public bool TryListRoot(out IReadOnlyList<(string Name, string Type)> entries)
     {
         entries = Array.Empty<(string, string)>();
+        if (!TryReadRootEntries(out var root)) return false;
+        entries = root.Select(e => (e.Name, e.Type)).ToList();
+        return entries.Count != 0;
+    }
+
+    public bool TryListLibrary(string library, out IReadOnlyList<(string Name, string Type)> entries)
+    {
+        entries = Array.Empty<(string, string)>();
+        if (!TryReadLibrary(library, out byte[] data, out _)) return false;
+        entries = ParseLibraryRows(data).Select(e => (e.Name, e.Type)).ToList();
+        return entries.Count != 0;
+    }
+
+    public bool TryReadLibraryText(string library, string member, out string text)
+    {
+        text = "";
+        if (!TryReadLibrary(library, out byte[] data, out _)) return false;
+        var rows = ParseLibraryRows(data);
+        var found = rows.FirstOrDefault(e => String.Equals(e.Name, member, StringComparison.OrdinalIgnoreCase));
+        if (String.IsNullOrEmpty(found.Name)) return false;
+        int nextPage = rows.Where(e => e.Page > found.Page).Select(e => e.Page).DefaultIfEmpty(found.Page + 2).Min();
+        int start = found.Page * CvitFileSystem.PageSize;
+        int end = Math.Min(data.Length, nextPage * CvitFileSystem.PageSize);
+        while (end > start && (data[end - 1] == 0 || data[end - 1] == 0x20 || data[end - 1] == 0x7F)) end--;
+        var b = new StringBuilder();
+        for (int i = start; i < end; i++)
+        {
+            int ch = data[i] & 0x7F;
+            if (ch == 0) continue;
+            if (ch == '\n') continue;
+            if (ch == '\r') b.Append("\r\n");
+            else if (ch >= 32 && ch < 127) b.Append((char)ch);
+        }
+        text = b.ToString();
+        return true;
+    }
+
+    bool TryReadLibrary(string library, out byte[] data, out Entry lib)
+    {
+        data = Array.Empty<byte>();
+        lib = default;
+        if (!TryReadRootEntries(out var root)) return false;
+        lib = root.FirstOrDefault(e => String.Equals(e.Name, library, StringComparison.OrdinalIgnoreCase));
+        if (String.IsNullOrEmpty(lib.Name) || lib.Type != "L") return false;
+        data = ReadEntryBytes(lib, maxSectors: lib.LengthSectors);
+        return data.Length != 0;
+    }
+
+    List<(string Name, string Type, int Page)> ParseLibraryRows(byte[] data)
+    {
+        var list = new List<(string Name, string Type, int Page)>();
+        for (int row = 16; row + 15 < data.Length && row < sectorSize; row += 16)
+        {
+            if (data[row] == 0x84 && data[row + 1] == 0x8D) break;
+            if (data[row] == 0 || data[row] == 0xFF) continue;
+            string name = FixedString(data, row, 10);
+            if (String.IsNullOrWhiteSpace(name) || !IsPrintableName(name)) continue;
+            int page = data[row + 10] + Math.Max(0, data[row + 12] - 0x08) * 128;
+            list.Add((name, TypeNames[data[row + 13] & 0x0F], page));
+        }
+        return list;
+    }
+
+    bool TryReadRootEntries(out List<Entry> entries)
+    {
+        entries = new List<Entry>();
         if (!DecodeVolume()) return false;
-        int dir = imageOffsetForSector(DirectorySector);
-        if (!RangeOk(dir, sectorSize)) return false;
-        var list = new List<(string Name, string Type)>();
         int row = 16;
         for (int guard = 0; guard < 800 && DirectorySector + row / sectorSize < image.Length / Math.Max(1, sectorSize); guard++, row += 16)
         {
@@ -953,13 +1025,69 @@ public sealed class Disk6Catalog
             if (!RangeOk(off, 16)) break;
             if (image[off] == 0x84 && image[off + 1] == 0x8D) break;
             if (image[off] == 0 || image[off] == 0xFF) continue;
-            string name = FixedString(off, 10);
-            if (String.IsNullOrWhiteSpace(name)) continue;
-            int attr = image[off + 13] & 0x0F;
-            list.Add((name, TypeNames[attr]));
+            if (TryParseEntry(off, out var ent)) entries.Add(ent);
         }
-        entries = list;
-        return list.Count != 0;
+        return entries.Count != 0;
+    }
+
+    bool TryParseEntry(int off, out Entry ent)
+    {
+        ent = new Entry { Name = FixedString(off, 10), Sectors = new List<int>() };
+        if (String.IsNullOrWhiteSpace(ent.Name)) return false;
+        ent.MapIndex = image[off + 10] * 3;
+        ent.MapSector = U16(off + 11);
+        ent.Attr = image[off + 13];
+        int ualBase = UalSector + ent.MapSector;
+        int ual = imageOffsetForSector(ualBase);
+        if (!RangeOk(ual, sectorSize) || ent.MapIndex + 5 >= sectorSize) return false;
+        ent.LengthSectors = U16(ual + ent.MapIndex) + 1;
+        int fsiShift = image[ual + ent.MapIndex + 4];
+        if (fsiShift > 15) return false;
+        ent.Fsi = 1 << fsiShift;
+        ent.Sectors = ReadUalSectors(ualBase, ent.MapIndex + 6, ent.LengthSectors);
+        return ent.Sectors.Count != 0;
+    }
+
+    List<int> ReadUalSectors(int ualSector, int offset, int lengthSectors)
+    {
+        var sectors = new List<int>();
+        int currentUal = ualSector, ofs = offset;
+        for (int guard = 0; guard < 100 && sectors.Count < lengthSectors; guard++)
+        {
+            int baseOff = imageOffsetForSector(currentUal);
+            if (!RangeOk(baseOff, sectorSize) || ofs + 2 >= sectorSize) break;
+            int si = U24(baseOff + ofs);
+            if (si == 0xFFFFFF) break;
+            if (si > 0x800000)
+            {
+                currentUal = UalSector + (U16(baseOff + ofs) ^ 0xFFFF);
+                ofs = image[baseOff + ofs + 2] * 3;
+            }
+            else
+            {
+                sectors.Add(si);
+                ofs += 3;
+            }
+        }
+        return sectors;
+    }
+
+    byte[] ReadEntryBytes(Entry ent, int maxSectors)
+    {
+        var data = new byte[Math.Max(0, maxSectors) * sectorSize];
+        int outOff = 0, remaining = maxSectors;
+        foreach (int start in ent.Sectors)
+        {
+            for (int i = 0; i < ent.Fsi && remaining > 0; i++, remaining--)
+            {
+                int off = imageOffsetForSector(start + i);
+                if (!RangeOk(off, sectorSize)) return data;
+                Buffer.BlockCopy(image, off, data, outOff, sectorSize);
+                outOff += sectorSize;
+            }
+            if (remaining <= 0) break;
+        }
+        return data;
     }
 
     bool DecodeVolume()
@@ -992,16 +1120,22 @@ public sealed class Disk6Catalog
     int U16(int off) => (image[off] << 8) | image[off + 1];
     int U24(int off) => (image[off] << 16) | (image[off + 1] << 8) | image[off + 2];
     bool RangeOk(int offset, int count) => offset >= 0 && offset + count <= image.Length;
-    string FixedString(int off, int count)
+    string FixedString(int off, int count) => FixedString(image, off, count);
+    static string FixedString(byte[] bytes, int off, int count)
     {
         var b = new StringBuilder();
         for (int i = 0; i < count; i++)
         {
-            int c = image[off + i] & 0x7F;
+            int c = bytes[off + i] & 0x7F;
             if (c == 0) break;
             if (c >= 32 && c < 127) b.Append((char)c);
         }
         return b.ToString().TrimEnd();
+    }
+    static bool IsPrintableName(string name)
+    {
+        foreach (char c in name) if (c < 32 || c >= 127) return false;
+        return true;
     }
 }
 
@@ -1542,9 +1676,15 @@ public sealed class Cpu6
     void TypeSystemMember()
     {
         var parsed = ParseCvitPath(ReadDebugLine(), "WELCOME", "YPE", "TYPE");
-        if (!IsKnownLibraryPrefix(parsed.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
         CvitFileSystem fs = CvitFsForDevice(parsed.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
+        if (!fs.LooksLikeSystemVolume())
+        {
+            if (TryTypeDisk6(parsed.Device, parsed.Prefix, parsed.Member)) return;
+            DebugOut("?NO FILE\r\n");
+            return;
+        }
+        if (!IsKnownLibraryPrefix(parsed.Prefix)) { DebugOut("?NO LIBRARY\r\n"); return; }
         if (!fs.TryReadTextMember(parsed.Prefix, parsed.Member, out string text)) { DebugOut("?NO FILE\r\n"); return; }
         DebugOut("\r\n");
         foreach (char ch in text) Write8(0xF201, ch);
@@ -1578,7 +1718,7 @@ public sealed class Cpu6
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
         if (!fs.LooksLikeSystemVolume())
         {
-            if (rootCatalog && TryCatalogDisk6(parsed.Device)) return;
+            if (TryCatalogDisk6(parsed.Device, rootCatalog ? "" : parsed.Member)) return;
             DebugOut("\r\n?NOT CVIT VOLUME\r\n");
             return;
         }
@@ -1587,14 +1727,27 @@ public sealed class Cpu6
         foreach (var entry in rootCatalog ? fs.ListRootEntries() : fs.ListMembers(catalogPrefix))
             DebugOut($"{entry.Name.PadRight(10)} {entry.Type}\r\n");
     }
-    bool TryCatalogDisk6(int device)
+    bool TryCatalogDisk6(int device, string library)
     {
         if (device < 0 || device >= hawkImages.Length || hawkImages[device] == null) return false;
         var disk = new Disk6Catalog(hawkImages[device], HawkImageOffsetForLogicalSector, HawkSectorSize);
-        if (!disk.TryListRoot(out var entries)) return false;
-        DebugOut($"\r\nDISK6 {disk.Name} CODE {disk.Code}\r\n");
+        bool ok = String.IsNullOrEmpty(library) ? disk.TryListRoot(out var entries) : disk.TryListLibrary(library, out entries);
+        if (!ok) return false;
+        DebugOut($"\r\nDISK6 {disk.Name}" + (String.IsNullOrEmpty(library) ? "" : $"/{library.ToUpperInvariant()}") + $" CODE {disk.Code}\r\n");
         DebugOut("NAME       TYPE\r\n");
         foreach (var entry in entries) DebugOut($"{entry.Name.PadRight(10)} {entry.Type}\r\n");
+        return true;
+    }
+    bool TryTypeDisk6(int device, string prefix, string member)
+    {
+        if (device < 0 || device >= hawkImages.Length || hawkImages[device] == null) return false;
+        string library = prefix.Trim('/');
+        if (String.IsNullOrEmpty(library) || String.IsNullOrEmpty(member)) return false;
+        var disk = new Disk6Catalog(hawkImages[device], HawkImageOffsetForLogicalSector, HawkSectorSize);
+        if (!disk.TryReadLibraryText(library, member, out string text)) return false;
+        DebugOut("\r\n");
+        foreach (char ch in text) Write8(0xF201, ch);
+        DebugOut("\r\n");
         return true;
     }
     void PrefixCommand()
