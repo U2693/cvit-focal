@@ -15,6 +15,18 @@ Common boot scripts:
 ./scripts/boot_hawk.sh  # bundled bootstrap + Hawk image; sends H0\r
 ```
 
+## cvit OS
+
+biscvit ships with **cvit**, a small ProDOS-inspired OS for the Hawk disk:
+
+```sh
+python3 scripts/mk_test_os.py      # builds out/os.img
+scripts/bis --hawk out/os.img      # boots to the ] prompt; try CAT, TYPE WELCOME, HELP
+```
+
+See `docs/cvit.md` for the cvit spec. Other notes: `docs/assembler.md`, `docs/focal.md`,
+`docs/centos-notes.md` (booting the real OS image, opcode findings) and `docs/bignum-notes.md` (the `0x46` bignum instructions).
+
 Options: `--load file addr`, `--pc addr`, `--sp addr`, `--boot-rom file`, `--type text`, `--trace`, `--floppy-trace`, `--floppy image`, `--hawk image`/`--hawk0 image`, `--hawk1 image`, `--floppy-sector-size n`, `--floppy-sectors-per-track n`, `--floppy-heads n`, `--floppy-tracks n`, `--hawk-sector-size n`, `--hawk-sector-stride n`, `--hawk-sectors-per-track n`, `--hawk-heads n`, `--hawk-image-offset n`, `--boot-floppy`, `--halt`, `--run`, `--max n`. The TUI starts running by default; use `--halt` to start paused.
 
 Experimental: `--ffc-linear-experimental` makes the FFC shim treat track/sector command bytes as one 16-bit linear block address. Do not use it for normal floppy booting; FDIPL uses floppy CHS addressing.
