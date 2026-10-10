@@ -432,7 +432,7 @@ public sealed class Tui
             inst = (op & 7) switch { 0 => "INRB", 1 => "DCRB", 2 => "CLRB", 3 => "NOTB", 4 => "SRLB", 5 => "SLLB", 6 => "RRCB", 7 => "RLCB", _ => "MISC8" };
             if ((op & 8) == 0) { bytes += $" {b1:X2}"; args = $"{ByteReg(b1 >> 4)}" + ((b1 & 15) != 0 ? $",#{(b1 & 15) + 1}" : ""); }
             else args = "AL";
-            if (op == 0x2E) { bytes += $" {b1:X2}"; inst = "LDM"; args = $"{PairReg((b1 & 15) >> 1)},#{b1 >> 5:X}"; }
+            if (op == 0x2E) { bytes += $" {b1:X2}"; inst = new[] { "WPF", "RPF", "WPF1", "RPF1", "WPFH", "RPFH" }.ElementAtOrDefault(b1 >> 4) ?? "PAGE?"; args = $"mode {(b1 >> 2) & 3},{b1 & 3}"; }
             if (op == 0x2F) { bytes += $" {b1:X2}"; inst = "DMA"; args = $"{b1:X2}"; }
         }
         else if (op < 0x40)
@@ -1554,7 +1554,6 @@ public sealed class Cpu6
         if (svc == 0x56) { RunSystemMember(); return; }
         Unknown();
     }
-<<<<<<< HEAD
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
     void CedDisplayOut(string s)
     {
@@ -2099,10 +2098,35 @@ public sealed class Cpu6
         while (count-- > 0) { Reg(r & 15, Read8(sp)); sp++; r++; }
         SetRegPair(SP, sp);
     }
+    // 0x2E PageTable (MMU page file) instructions: 2E ssssmmnn, per the Centurion wiki (OpC_20-2F).
+    // Page tables are stored (8 maps x 32 one-byte entries) but address translation is not modelled yet.
+    public readonly byte[] pageTable = new byte[8 * 32];
+    void PageTable()
+    {
+        byte sel = Fetch();
+        int s = sel >> 4, mm = (sel >> 2) & 3, nn = sel & 3;
+        if (mm != 3 || s > 5) { Unknown(); return; }
+        byte o1 = Fetch();
+        ushort ea;
+        if (nn == 0) ea = Fetch16();
+        else if (nn == 1)
+        {
+            byte rr = Fetch(); int r1 = rr >> 4, r2 = rr & 15;
+            int imm = (r1 & 1) != 0 ? (short)Fetch16() : unchecked((sbyte)Fetch());
+            ea = (ushort)(imm + RegPair(r1 >> 1) + ((r2 >> 1) != 0 ? RegPair(r2 >> 1) : 0));
+        }
+        else { Unknown(); return; }
+        int map = o1 & 7, idx = o1 >> 3, n = (s <= 1) ? (idx == 0 ? 32 : idx) : (s <= 3 ? 1 : 32 - idx), first = (s <= 1) ? 0 : idx;
+        for (int i = 0; i < n; i++)
+        {
+            int slot = map * 32 + ((first + i) & 31);
+            if ((s & 1) == 0) pageTable[slot] = Read8((ushort)(ea + i)); else Write8((ushort)(ea + i), pageTable[slot]);
+        }
+    }
     void Misc8()
     {
         int r = AL, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x20 || op == 0x21 || (op >= 0x24 && op <= 0x27)) { r = enc >> 4; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 4; }
-        switch (op) { case 0x20: while (count-- > 0) Inc8(r); break; case 0x21: while (count-- > 0) Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) Shr8(r); break; case 0x25: while (count-- > 0) Shl8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: byte e = Fetch(); SetRegPair((e & 15) >> 1, (ushort)(e >> 5)); break; case 0x2F: Dma(); break; default: Unknown(); break; }
+        switch (op) { case 0x20: while (count-- > 0) Inc8(r); break; case 0x21: while (count-- > 0) Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) Shr8(r); break; case 0x25: while (count-- > 0) Shl8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: PageTable(); break; case 0x2F: Dma(); break; default: Unknown(); break; }
     }
     void Misc16()
     {
@@ -2235,38 +2259,42 @@ public sealed class Cpu6
         throw new InvalidOperationException($"unsupported bignum selector {selector:X} modes={m},{n} at ${(ushort)(PC - 1):X4}");
     }
 
+    // 0x47 / 0x67 block instructions: 47 ssssmmnn ...  (see wiki OpC_40-4F).  67 takes its length-1 from AL.
+    //   sel 4 memcpy, 8 memcmp, 9 memset.  Operand modes: 0 direct address word, 1 indexed (regs byte + imm),
+    //   2 register (one byte: operand-1 reg in the high nibble, operand-2 reg in the low nibble),
+    //   3 literal (inline bytes: `len` of them for memcpy/memcmp, one byte for memset).
     void MemOp()
     {
         byte ib = Fetch();
-        if (op == 0x67)
+        int sel = ib >> 4, mm = (ib >> 2) & 3, nn = ib & 3;
+        if (sel != 4 && sel != 8 && sel != 9) { Unknown(); return; }
+        int len = (op == 0x67 ? Reg(AL) : Fetch()) + 1;
+        byte regs = (mm == 2 || nn == 2) ? Fetch() : (byte)0;
+        ushort Operand(int mode, bool first, int inlineLen)
         {
-            byte spec = Fetch();
-            if (ib == 0x4A && spec == 0x86)
+            switch (mode)
             {
-                // Variable-length memcpy used by WIPL/FDIPL's object loader:
-                //   67 4A 86  memcpy AL+1, [EX/Z], [DX/Y]
-                // The loader preloads AL with length-1 and expects X/Y/Z to be
-                // preserved so it can advance pointers itself afterwards.
-                int vlen = Reg(AL) + 1;
-                ushort src = RegPair(EX), dst = RegPair(DX);
-                for (int i = 0; i < vlen; i++) Write8((ushort)(dst + i), Read8((ushort)(src + i)));
-                return;
+                case 0: return Fetch16();
+                case 1:
+                {
+                    byte rr = Fetch(); int r1 = rr >> 4, r2 = rr & 15;
+                    int imm = (r1 & 1) != 0 ? (short)Fetch16() : unchecked((sbyte)Fetch());
+                    return (ushort)(imm + RegPair(r1 >> 1) + ((r2 >> 1) != 0 ? RegPair(r2 >> 1) : 0));
+                }
+                case 2: return RegPair((first ? regs >> 4 : regs & 15) >> 1);
+                default: { ushort a = PC; PC += (ushort)inlineLen; return a; }
             }
-            Unknown();
-            return;
         }
-
-        int selector = ib >> 4;
-        int len = Fetch() + 1;
-        if (selector == 4 || selector == 9)
+        ushort ea1 = Operand(mm, true, sel == 9 ? 1 : len);
+        ushort ea2 = Operand(nn, false, len);
+        if (sel == 4) for (int i = 0; i < len; i++) Write8((ushort)(ea2 + i), Read8((ushort)(ea1 + i)));
+        else if (sel == 9) { byte v = Read8(ea1); for (int i = 0; i < len; i++) Write8((ushort)(ea2 + i), v); Flag8(v, false, 0); }
+        else
         {
-            byte value = Fetch();
-            ushort dst = Fetch16();
-            for (int i = 0; i < len; i++) Write8((ushort)(dst + i), value);
-            Flag8(value, false, 0);
-            return;
+            int i = 0, d = 0;
+            for (; i < len; i++) { d = Read8((ushort)(ea1 + i)) - Read8((ushort)(ea2 + i)); if (d != 0) break; }
+            flags = (byte)(flags & ~(N | Z)); if (d == 0) flags |= Z; else if (d < 0) flags |= N;
         }
-        Unknown();
     }
 
     void Dma()

@@ -165,6 +165,32 @@ class EmuTests(unittest.TestCase):
         r, _ = self.regs(prog2)
         self.assertEqual((r["AX"], r["BX"]), (8, 6))
 
+    def test_memcpy_literal_to_direct(self):       # 47 4C n  <n+1 literal bytes> <dest>
+        def prog(a):
+            a.raw(0x47, 0x4C, 0x03, 0x12, 0x34, 0x56, 0x78).u16(0x4000).lda_d(0x4000)
+        r, _ = self.regs(prog)
+        self.assertEqual(r["AX"], 0x1234)
+
+    def test_memcpy_register_form(self):           # 67 4A 86: AL+1 bytes from [Z] to [Y]
+        def prog(a):
+            a.lda_i(0x1234).sta_d(0x4000).lda_i(0x4000).xaz().lda_i(0x4100).xay()
+            a.ldab_i(1).raw(0x67, 0x4A, 0x86).lda_d(0x4100)
+        r, _ = self.regs(prog)
+        self.assertEqual(r["AX"], 0x1234)
+
+    def test_memset_literal(self):                 # 47 9C n <byte> <dest>
+        r, _ = self.regs(lambda a: a.raw(0x47, 0x9C, 0x01, 0xAB).u16(0x4000).lda_d(0x4000))
+        self.assertEqual(r["AX"], 0xABAB)
+
+    def test_page_table_roundtrip(self):           # 2E: WPF1 (sel 2) then RPF1 (sel 3)
+        def prog(a):
+            a.raw(0x47, 0x4C, 0x00, 0x5A).u16(0x4000)                 # [4000] = 5A
+            a.raw(0x2E, 0x2C, 0x00 | (3 << 3)).u16(0x4000)           # WPF1 map0 index3 <- [4000]
+            a.raw(0x2E, 0x3C, 0x00 | (3 << 3)).u16(0x4001)           # RPF1 -> [4001]
+            a.ldab_d(0x4001)
+        r, _ = self.regs(prog)
+        self.assertEqual(r["AX"] & 0xFF, 0x5A)
+
     def test_relaxed_branch_runs(self):
         def prog(a):
             a.lda_i(0).bz("far").ds(200, 0x01).label("far").lda_i(0x55)   # skipped NOP padding
