@@ -210,6 +210,34 @@ class EmuTests(unittest.TestCase):
         self.assertEqual(r["AX"], 0x2211)
         self.assertEqual(r["BX"] >> 8, 0xFF)
 
+    # Opcode details from Meisaka's opcode table (see docs/centos-notes.md).
+    def test_inr_memory_direct_with_count(self):         # 30 1c aaaa = INR [aaaa], c+1
+        def prog(a):
+            a.raw(0x47, 0x4C, 0x01, 0x00, 0x1E).u16(0x4000)        # [4000] = 001E
+            a.raw(0x30, 0x10).u16(0x4000)                          # INR [4000]
+            a.raw(0x30, 0x13).u16(0x4000)                          # INR [4000], 4
+            a.lda_d(0x4000)
+        r, _ = self.regs(prog)
+        self.assertEqual(r["AX"], 0x1E + 1 + 4)
+
+    def test_clr_register_with_value(self):              # CLR C,13 loads the constant
+        r, _ = self.regs(lambda a: a.raw(0x32, 0xCD))
+        self.assertEqual(r["GX"], 13)
+
+    def test_mvl_copies_a_plus_one_bytes(self):          # F7: copy A+1 bytes from [B] to [Y]
+        def prog(a):
+            a.raw(0x47, 0x4C, 0x03, 0x12, 0x34, 0x56, 0x78).u16(0x4000)
+            a.lda_i(3).ldb_i(0x4000).ldb_i(0x4000).lda_i(0x4100).xay().lda_i(3).raw(0xF7)
+            a.lda_d(0x4100).ldb_d(0x4102)
+        r, _ = self.regs(prog)
+        self.assertEqual((r["AX"], r["BX"]), (0x1234, 0x5678))
+
+    def test_str_direct_store(self):                     # D6 01 aaaa = STR A,[aaaa]
+        def prog(a):
+            a.lda_i(0x1234).raw(0xD6, 0x01).u16(0x4000).lda_i(0).lda_d(0x4000)
+        r, _ = self.regs(prog)
+        self.assertEqual(r["AX"], 0x1234)
+
     def test_relaxed_branch_runs(self):
         def prog(a):
             a.lda_i(0).bz("far").ds(200, 0x01).label("far").lda_i(0x55)   # skipped NOP padding

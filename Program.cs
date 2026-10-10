@@ -1307,7 +1307,10 @@ public sealed class Cpu6
     {
         int phys = Phys(la);
         if (phys < 0x3F000) return phys < RamBytes ? mem[phys] : (byte)0xFF;
-        ushort a = (ushort)phys;
+        return ReadDev((ushort)phys);
+    }
+    byte ReadDev(ushort a)     // I/O + ROM window: physical 0x3F000-0x3FFFF (address given as F000-FFFF)
+    {
         if (a == 0xF200) return (byte)(0x02 | (terminalInput.Count != 0 ? 0x01 : 0x00)); // MUX0 status: RX ready bit0, TX ready bit1
         if (a == 0xF201)
         {
@@ -1331,7 +1334,10 @@ public sealed class Cpu6
         byte b = (byte)v;
         int phys = Phys(la);
         if (phys < 0x3F000) { if (phys < RamBytes) mem[phys] = b; return; }
-        ushort a = (ushort)phys;
+        WriteDev((ushort)phys, b);
+    }
+    void WriteDev(ushort a, byte b)
+    {
         if (a == 0xF200 || a == 0xF208) return; // MUX control/config
         if (a == 0xF20A || a == 0xF20E) { muxInterruptEnabled = b != 0; mem[0x30000 | a] = b; return; } // MUX interrupt-ish enables used by WIPL
         if (a == 0xF201)
@@ -1408,6 +1414,7 @@ public sealed class Cpu6
             return;
         }
         ServiceInterrupts();
+        if (clockEnabled && ++clockCycles >= ClockPeriod) { clockCycles = 0; clockTick = true; }
         ushort oldpc = PC; op = Fetch();
         if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX));
         if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op == 0x66) Svc(); else if (op == 0x67) MemOp(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
@@ -1461,7 +1468,7 @@ public sealed class Cpu6
             case 8: t = (flags & (N | Z)) == 0; break; // BGZ: not minus and not zero
             case 9: t = (flags & (N | Z)) != 0; break; // BLE: less-or-equal zero
             case 14: t = (flags & I) != 0; break;
-            case 15: t = false; break; // clock interrupt enable is not modelled yet
+            case 15: t = clockTick; clockTick = false; break; // BCK: branch if the clock ticked (and consume the tick)
             default: t = false; break;
         }
         sbyte off = unchecked((sbyte)Fetch()); if (t) PC = (ushort)(PC + off);
@@ -1469,6 +1476,7 @@ public sealed class Cpu6
 
     void ReturnInterrupt(bool restoreFlags)
     {
+        if (op == 0x0F) { ReturnSvc(); return; }
         if (interruptStack.Count == 0) { if (op == 0x0F) ipl = 15; return; }
         InterruptFrame f = interruptStack.Pop();
         PC = f.Pc;
@@ -1511,6 +1519,20 @@ public sealed class Cpu6
         if (op == 0xD7) { InterLevelStore(); return; }
         if (op == 0xE6) { InterLevelLoad(); return; }
         if (op == 0xF6) { Xio(); return; }
+        if ((op & 15) == 6 || (op & 15) == 7)
+        {
+            // Opcodes 86..F7 with a low nibble of 6/7 are not addressing modes (Meisaka's opcode table):
+            //   86 DPE, 96 SOP, A6 SEP (parity modes), B6 ECK, C6 DCK, D6 STR, F7 MVL; 87 97 A7 B7 C7 E7 are illegal.
+            switch (op)
+            {
+                case 0x86: case 0x96: case 0xA6: return;
+                case 0xB6: clockEnabled = true; return;
+                case 0xC6: clockEnabled = false; clockTick = false; return;
+                case 0xD6: Str(); return;
+                case 0xF7: Mvl(); return;
+                default: Unknown(); return;
+            }
+        }
         int m = op & 15; bool b = (op & 0x40) != 0; ushort a; switch (op & 0x30) { case 0x00: a = Addr(1, m); Reg(b ? BL : AL, Read8(a)); Flag8(Reg(b ? BL : AL), false, 0); break; case 0x10: a = Addr(2, m); SetRegPair(b ? BX : AX, Read16(a)); Flag16(RegPair(b ? BX : AX), false, 0); break; case 0x20: a = Addr(1, m); Write8(a, Reg(b ? BL : AL)); break; case 0x30: a = Addr(2, m); Write16(a, RegPair(b ? BX : AX)); break; }
     }
     ushort InterLevelAddr(int level, int reg) { return (ushort)((level << 4) | (reg & 14)); }
@@ -1535,18 +1557,23 @@ public sealed class Cpu6
         SetRegPair(AX, ReadInterLevelWord(level, reg));
         Flag16(RegPair(AX), false, 0);
     }
+    // F6 jk dd: LIO/SIO (system mode).  j = data register nibble, k&14 = base register, bit 0 of k selects SIO (store),
+    // bit 4 of the byte (j odd) selects the byte form.  EA = (base + signed dd) | 0x3F000: always the I/O area.
     void Xio()
     {
-        byte spec = Fetch();
-        sbyte off = unchecked((sbyte)Fetch());
-        ushort z = RegPair(EX);
-        if (z == 0) z = (ushort)(0xF000 | RegPair(RT)); // Some HDIPL paths keep the Z/MMIO base as a low I/O page in RT.
-        ushort a = (ushort)(z + off); // Z register is the device base in WIPL's XIO forms.
-        if (spec == 0x19) Write8(a, Reg(AL));
-        else if (spec == 0x39) Write8(a, Reg(BL));
-        else if (spec == 0x18) { Reg(AL, Read8(a)); Flag8(Reg(AL), false, 0); }
-        else if (spec == 0x38) { Reg(BL, Read8(a)); Flag8(Reg(BL), false, 0); }
-        else Unknown();
+        byte rvc = Fetch(); sbyte off = unchecked((sbyte)Fetch());
+        ushort ea = (ushort)(RegPair((rvc & 14) >> 1) + off);
+        ushort a = (ushort)(0xF000 | ea);
+        int j = rvc >> 4; bool store = (rvc & 1) != 0, byteForm = (rvc & 0x10) != 0;
+        if (byteForm)
+        {
+            if (store) WriteDev(a, Reg(j)); else { Reg(j, ReadDev(a)); Flag8(Reg(j), false, 0); }
+        }
+        else
+        {
+            if (store) { WriteDev(a, (byte)(RegPair(j >> 1) >> 8)); WriteDev((ushort)(a + 1), (byte)RegPair(j >> 1)); }
+            else { SetRegPair(j >> 1, (ushort)((ReadDev(a) << 8) | ReadDev((ushort)(a + 1)))); Flag16(RegPair(j >> 1), false, 0); }
+        }
     }
     void Rt() { ushort a = Addr(2, op & 7); if ((op & 8) != 0) Write16(a, RegPair(RT)); else SetRegPair(RT, Read16(a)); Flag16(RegPair(RT), false, 0); }
     void Svc()
@@ -1570,7 +1597,21 @@ public sealed class Cpu6
         if (svc == 0x54) { StartKeyTrace(); return; }
         if (svc == 0x55) { PrefixCommand(); return; }
         if (svc == 0x56) { RunSystemMember(); return; }
-        Unknown();
+        // Real SVC/JSYS (CenturionJS op_JSYS, wiki "JSYS"): push page-table map, IPL, X, then the argument; X <- PC;
+        // select map 0 and enter the system call handler at 0x0100.  RSV (0x0F) undoes it.
+        PushB((byte)mmuMap); PushB(ipl); Push(RegPair(RT)); SetRegPair(RT, PC); PushB(svc);
+        mmuMap = 0; jsysDepth++;
+        PC = 0x0100;
+    }
+    int jsysDepth;
+    void PushB(byte v) { ushort sp = (ushort)(RegPair(SP) - 1); Write8(sp, v); SetRegPair(SP, sp); }
+    byte PopB() { ushort sp = RegPair(SP); byte v = Read8(sp); SetRegPair(SP, (ushort)(sp + 1)); return v; }
+    void ReturnSvc()
+    {
+        PopB();                                   // the argument byte
+        ushort newX = Pop(); byte newIpl = PopB(); byte newMap = PopB();
+        PC = RegPair(RT); SetRegPair(RT, newX);
+        ipl = (byte)(newIpl & 15); mmuMap = newMap & 7; if (jsysDepth > 0) jsysDepth--;
     }
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
     void CedDisplayOut(string s)
@@ -2094,6 +2135,7 @@ public sealed class Cpu6
     void Jump()
     {
         if (op == 0x77 || op == 0x78) { MulDiv(); return; }
+        if (op == 0x76) return;   // EPE: enable parity errors (no parity model)
         if (op == 0x7E) { PushBytes(); return; }
         if (op == 0x7F) { PopBytes(); return; }
         ushort n; switch (op & 7) { case 0: n = RegPair(AX); break; case 1: n = Fetch16(); break; case 2: n = Read16(Fetch16()); break; case 3: { sbyte off = unchecked((sbyte)Fetch()); n = (ushort)(PC + off); break; } case 4: { sbyte off = unchecked((sbyte)Fetch()); n = Read16((ushort)(PC + off)); break; } case 5: n = Indexed(2); break; default: Unknown(); return; }
@@ -2115,6 +2157,31 @@ public sealed class Cpu6
         ushort sp = RegPair(SP);
         while (count-- > 0) { Reg(r & 15, Read8(sp)); sp++; r++; }
         SetRegPair(SP, sp);
+    }
+    // Real-time clock: ECK/DCK enable/disable it; while enabled it ticks (~60 Hz on hardware); BCK branches on the tick.
+    bool clockEnabled, clockTick;
+    int clockCycles;
+    public int ClockPeriod = 20000;           // instructions per tick (hardware: 83333 microcycles)
+    // STR (0xD6): 16-bit store with the inverse of the 5x extended modes.  e = left/right register nibbles:
+    //   even,even  left <- right        even,odd  [addr16] <- right
+    //   odd,even   literal word at PC <- right (self-modifying form)       odd,odd  [left+disp16] <- right
+    void Str()
+    {
+        byte e = Fetch(); int l = (e >> 4) >> 1, r = (e & 15) >> 1; bool lo = (e & 0x10) != 0, ro = (e & 1) != 0;
+        if (!lo && !ro) { SetRegPair(l, RegPair(r)); Flag16(RegPair(l), false, 0); return; }
+        ushort a;
+        if (!lo && ro) a = Fetch16();
+        else if (lo && !ro) { a = PC; PC += 2; }
+        else { ushort d = Fetch16(); a = (ushort)(RegPair(l) + d); }
+        Write16(a, RegPair(r));
+    }
+    // MVL (0xF7): copy A+1 bytes from [B] to [Y]; afterwards B and Y have advanced and A = FFFF.
+    // The count convention (A = length-1) and the final register values are inferred, not verified.
+    void Mvl()
+    {
+        int n = RegPair(AX) + 1; ushort src = RegPair(BX), dst = RegPair(DX);
+        for (int i = 0; i < n; i++) Write8((ushort)(dst + i), Read8((ushort)(src + i)));
+        SetRegPair(BX, (ushort)(src + n)); SetRegPair(DX, (ushort)(dst + n)); SetRegPair(AX, 0xFFFF);
     }
     // 0x2E PageTable (MMU page file) instructions: 2E ssssmmnn, per the Centurion wiki (OpC_20-2F).
     // Page tables are stored (8 maps x 32 one-byte entries) but address translation is not modelled yet.
@@ -2149,12 +2216,37 @@ public sealed class Cpu6
     }
     void Misc8()
     {
-        int r = AL, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x20 || op == 0x21 || (op >= 0x24 && op <= 0x27)) { r = enc >> 4; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 4; }
+        int r = AL, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x22) { Reg(enc >> 4, enc & 15); Flag8(enc & 15, false, 0); return; } else if (op == 0x20 || op == 0x21 || (op >= 0x24 && op <= 0x27)) { r = enc >> 4; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 4; }
         switch (op) { case 0x20: while (count-- > 0) Inc8(r); break; case 0x21: while (count-- > 0) Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) Shr8(r); break; case 0x25: while (count-- > 0) Shl8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: PageTable(); break; case 0x2F: Dma(); break; default: Unknown(); break; }
+    }
+    // INR/DCR/CLR/IVR/SRR/SLR/RRR/RLR (0x30-0x37) with an odd register nibble operate on a memory word:
+    //   3x 1c aaaa      op [aaaa]            (nibble 1 = "A" slot = direct address)
+    //   3x rc dddd      op [reg + dddd]      (r odd, register = r&14; dddd is a 16-bit displacement)
+    // c = count-1 for INR/DCR/shifts/rotates (Meisaka's opcode table; Centurion wiki OpC_30-3F).
+    void MemRc(byte enc)
+    {
+        int pair = ((enc >> 4) & 14) >> 1;
+        ushort ea = pair == 0 ? Fetch16() : (ushort)(RegPair(pair) + (short)Fetch16());
+        int n = (op == 0x32 || op == 0x33) ? 1 : (enc & 15) + 1;
+        ushort save = RegPair(AX);
+        SetRegPair(AX, Read16(ea));
+        switch (op)
+        {
+            case 0x30: while (n-- > 0) Inc16(AX); break;
+            case 0x31: while (n-- > 0) Dec16(AX); break;
+            case 0x32: SetRegPair(AX, 0); Flag16(0, false, 0); break;
+            case 0x33: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break;
+            case 0x34: while (n-- > 0) Shr16(AX); break;
+            case 0x35: while (n-- > 0) Shl16(AX); break;
+            case 0x36: while (n-- > 0) Rrc16(AX); break;
+            case 0x37: while (n-- > 0) Rlc16(AX); break;
+        }
+        Write16(ea, RegPair(AX));
+        SetRegPair(AX, save);
     }
     void Misc16()
     {
-        int r = AX, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x33) r = (enc >> 4) >> 1; else if (op == 0x30 || op == 0x31 || (op >= 0x34 && op <= 0x37)) { r = (enc >> 4) >> 1; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 5; }
+        int r = AX, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 0x10) != 0 && op <= 0x37) { MemRc(enc); return; } if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x32) { SetRegPair((enc >> 4) >> 1, (ushort)(enc & 15)); Flag16(enc & 15, false, 0); return; } else if (op == 0x33) r = (enc >> 4) >> 1; else if (op == 0x30 || op == 0x31 || (op >= 0x34 && op <= 0x37)) { r = (enc >> 4) >> 1; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 5; }
         switch (op) { case 0x30: while (count-- > 0) Inc16(r); break; case 0x31: while (count-- > 0) Dec16(r); break; case 0x32: SetRegPair(r, 0); Flag16(0, false, 0); break; case 0x33: SetRegPair(r, (ushort)~RegPair(r)); Flag16(RegPair(r), false, 0); break; case 0x34: while (count-- > 0) Shr16(r); break; case 0x35: while (count-- > 0) Shl16(r); break; case 0x36: while (count-- > 0) Rrc16(r); break; case 0x37: while (count-- > 0) Rlc16(r); break; case 0x38: Inc16(AX); break; case 0x39: Dec16(AX); break; case 0x3A: SetRegPair(AX, 0); Flag16(0, false, 0); break; case 0x3B: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break; case 0x3C: Shr16(AX); break; case 0x3D: Shl16(AX); break; case 0x3E: Inc16(RT); break; case 0x3F: Dec16(RT); break; }
     }
     void Alu8()

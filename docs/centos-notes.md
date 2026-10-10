@@ -35,14 +35,29 @@ Model taken from CenturionJS (`CPU6Card.ts`) and the wiki:
   probing works.  RPF reads return the entry with bit 7 from `MemStatus` (always 0 for now).
 - The register file (low addresses `0x00-0xFF`) is physical and bypasses the page tables.
 
+## Opcode corrections from Meisaka's emulator source (`Emulators/Meisaka/Emu 0.22/src/cen.ts`)
+The CenRE-licensed source (read only, nothing copied) has the authoritative opcode/mode table.  What it fixed in biscvit:
+- **RC-type word ops with an odd register nibble operate on memory** (`INR/DCR/CLR/IVR/SRR/SLR/RRR/RLR`): `30 1c aaaa` is
+  `INR [aaaa]`, `30 rc dddd` is `INR [reg+dddd]`.  The CentOS probe loop's `30 10 D4 D4` is `INR [D4D4]`, the page counter
+  (it counts `1E`..`7D`).  I had decoded it as `INR A` followed by a bogus `LDB`, which is why nothing ever changed `D4D4`.
+- **`CLR r,n` loads the constant n** (0-15), e.g. `32 CD` = `CLR C,13`.
+- **Low nibble 6/7 on `80-FF` are not addressing modes**: `86 DPE`, `96 SOP`, `A6 SEP` (parity, no-ops here), `B6 ECK`, `C6 DCK`,
+  `D6 STR`, `D7 SAR`, `E6 LAR`, `F6 LIO/SIO`, `F7 MVL`; `87 97 A7 B7 C7 E7` are illegal.
+  `MVL` is implemented as "copy A+1 bytes from [B] to [Y]; B,Y advance; A=FFFF" (end state inferred).  `ECK/DCK` drive a clock tick
+  (`BCK` branches on it).  `STR` (`D6`) follows the wiki's four forms.
+- **`F6` XIO is `jk dd`**: `EA = (base + dd) | 0x3F000` (always the I/O window), `j` = data register, `k&14` = base register,
+  `k&1` = store, a high-byte flag selects the byte form.  This replaced the old Z-only special cases.
+- **SVC (`66 nn`) / RSV (`0F`)** follow CenturionJS's JSYS/RSYS: push map, IPL, X, argument; X<-PC; map 0; PC=`0100`; RSV pops them
+  (and so can switch IPL/map: the OS builds RSV frames by hand to dispatch tasks).  The cvit `SVC $40` convention is kept.
+- `EPE` (`76`) is a no-op.
+
 ## Where CentOS stops now
-`scripts/bis --hawk CENTOS_12.IMG` (boot keys `H0`) runs the early setup and then loops at `D030-D061`.  Each pass: `WPF1` page 31 <-
-byte at `D4D5`, write/read-back test of `FFFF`, `F7` (see below), a `memcmp` against `D08A`, then `LDA [D4D4]; B = 0x7D - A; BP loop`.
-Nothing the OS has executed so far changes `D4D4` (= `001E`), so the loop never ends.  Open questions:
-- `F7`: the old wiki page says "copies AW bytes from BW to YW"; biscvit executes it as `STB` via P (which, with P=0, writes into
-  the register file: it is why `A` becomes `F800`).  Trying a block copy made no difference to the loop.
-- `D4D4`/`D4D5` might be a tick counter updated by a clock interrupt (not modelled; `ECK`/`EI` have not run yet), or written by a
-  device/DMA that is not emulated.  The next step is to find the first code that stores to `D4D4`/`D4D5`.
+`scripts/bis --hawk CENTOS_12.IMG --ram-kb 128` (boot keys `H0`): the memory probe finishes, the OS sizes memory, sets up page
+tables and level-15 state and enters the resident kernel at `8000-80FF` (about 36,000 instructions in).  It then does
+`JSR *A` through a vector at `A1FA` that is still zero (the table around `A1F0` is an empty list), so execution falls into page 0.
+The kernel's message table (`OPSYS ABORTED`, `ATTEMPTING AUTO-RECOVERY`, `MEMORY LOCK`, ...) is at `8130`+, so this is probably
+an abort path.  Next steps: find what should have filled the `A1FA` table (a disk read via the Hawk, a DMA, or an interrupt
+handler), and how RSV-based dispatch is meant to run the first task.
 Tools: `--trace`, `--regs`, `--dump addr len`, `--ram-kb n`.  (Don't trace 30M steps: that is a few GB.)
 
 ## Earlier experiment (superseded): four-byte literal for DIV=
