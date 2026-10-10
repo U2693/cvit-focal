@@ -93,21 +93,21 @@ class AsmTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("dotnet"), "dotnet not available")
 class EmuTests(unittest.TestCase):
     @staticmethod
-    def run_prog(build):
+    def run_prog(build, extra=()):
         a = Asm(0x100); build(a); a.hlt()
         with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
             f.write(a.bytes())
         env = dict(os.environ, DOTNET_ROLL_FORWARD="Major")
         out = subprocess.run(["dotnet", "run", "--project", str(ROOT), "--", "--load", f.name, "0100",
-                              "--pc", "0100", "--run", "--regs", "--max", "1000"],
+                              "--pc", "0100", "--run", "--regs", "--max", "1000", *extra],
                              capture_output=True, text=True, env=env).stdout
         os.unlink(f.name)
         regs = dict(re.findall(r"\b([A-Z]{2})=([0-9A-F]{4})", out))
         return {k: int(v, 16) for k, v in regs.items()}, out
 
     # Expected values follow the Centurion optest07.asm comments for MUL (0x77) and DIV (0x78).
-    def regs(self, build):
-        r, out = self.run_prog(build)
+    def regs(self, build, extra=()):
+        r, out = self.run_prog(build, extra)
         return r, re.search(r"FLAGS=(\S+)", out).group(1)
 
     def test_mul_reg_reg_even_dst(self):          # MUL B,A: B*A -> A,B
@@ -190,6 +190,25 @@ class EmuTests(unittest.TestCase):
             a.ldab_d(0x4001)
         r, _ = self.regs(prog)
         self.assertEqual(r["AX"] & 0xFF, 0x5A)
+
+    def test_mmu_remap_and_missing_memory(self):
+        def setpage(a, page, phys):                  # WPF1 map0: logical page <- physical page (from a byte at 0x4000)
+            a.raw(0x47, 0x4C, 0x00, phys).u16(0x4000)
+            a.raw(0x2E, 0x2C, page << 3).u16(0x4000)
+        def prog(a):
+            setpage(a, 16, 16)                       # identity (logical 0x8000)
+            a.ldab_i(0x11).stab_d(0x8000)
+            setpage(a, 16, 32)                       # logical 0x8000 -> physical 0x10000
+            a.ldab_i(0x22).stab_d(0x8000)
+            a.ldab_d(0x8000).stab_d(0x4010)          # 0x22
+            setpage(a, 16, 16)
+            a.ldab_d(0x8000).stab_d(0x4011)          # 0x11 (first page untouched)
+            setpage(a, 16, 100)                      # beyond installed RAM: reads 0xFF
+            a.ldab_d(0x8000).stab_d(0x4012)
+            a.lda_d(0x4010).ldb_d(0x4012)
+        r, _ = self.regs(prog, ("--ram-kb", "128"))
+        self.assertEqual(r["AX"], 0x2211)
+        self.assertEqual(r["BX"] >> 8, 0xFF)
 
     def test_relaxed_branch_runs(self):
         def prog(a):

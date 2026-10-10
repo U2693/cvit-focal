@@ -58,6 +58,7 @@ public static class BiscvitProgram
                 else if (a == "--run") headless = true;
                 else if (a == "--halt") halt = true;
                 else if (a == "--regs") printRegs = true;
+                else if (a == "--ram-kb" && i + 1 < args.Length) cpu.RamBytes = int.Parse(args[++i]) * 1024;
                 else if (a == "--dump") { dumps.Add((Hex16(args[++i]), Hex16(args[++i]))); }
                 else if (a == "--max" && i + 1 < args.Length) maxSteps = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else throw new ArgumentException("bad argument: " + a);
@@ -71,7 +72,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--dump addr len] [--max n]");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--ram-kb n] [--dump addr len] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
         Console.WriteLine("TUI keys: terminal focus is normally console; F12 toggles MUX1 focus/overlay; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
@@ -1159,7 +1160,14 @@ public sealed class Cpu6
 
     const ushort CommandLineBuffer = 0x2F00;
 
-    readonly byte[] mem = new byte[65536];
+    // Physical memory: 256K address space (18 bits).  RAM occupies [0, RamBytes); physical 0x3F000-0x3FFFF is the
+    // I/O + boot-ROM window (logical F000-FFFF under the default map).  Nonexistent memory reads 0xFF.
+    readonly byte[] mem = new byte[0x40000];
+    public int RamBytes = 0x10000;
+    public byte MemStatus;                    // MSR: bit 7 is returned in the top bit of page-table reads (not driven yet)
+    int mmuMap;                               // active page-table map (0 = system); changed by JSYS/RSYS (not modelled yet)
+    int Phys(ushort a) { return ((pageTable[(mmuMap << 5) | (a >> 11)] & 0x7F) << 11) | (a & 0x7FF); }
+    public int Translate(ushort a) { return Phys(a); }
     readonly Queue<byte> terminalInput = new Queue<byte>();
     readonly Queue<byte> mux1Input = new Queue<byte>();
     byte flags, ipl, op;
@@ -1238,7 +1246,11 @@ public sealed class Cpu6
         SetRegPair(SP, 0xFFFE);
         Halted = false;
     }
-    public void Load(byte[] bytes, ushort address) { if (address + bytes.Length > 65536) throw new ArgumentException("load does not fit memory"); Buffer.BlockCopy(bytes, 0, mem, address, bytes.Length); }
+    public void Load(byte[] bytes, ushort address)
+    {
+        if (address + bytes.Length > 65536) throw new ArgumentException("load does not fit memory");
+        for (int i = 0; i < bytes.Length; i++) { int pa = address + i; mem[pa >= 0xF000 ? 0x30000 | pa : pa] = bytes[i]; }
+    }
     public void MountFloppy(string path)
     {
         floppyPath = path;
@@ -1291,8 +1303,11 @@ public sealed class Cpu6
         Console.WriteLine("booted floppy: loaded {0} bytes at 0100, PC=0103", n);
     }
 
-    byte Read8(ushort a)
+    byte Read8(ushort la)
     {
+        int phys = Phys(la);
+        if (phys < 0x3F000) return phys < RamBytes ? mem[phys] : (byte)0xFF;
+        ushort a = (ushort)phys;
         if (a == 0xF200) return (byte)(0x02 | (terminalInput.Count != 0 ? 0x01 : 0x00)); // MUX0 status: RX ready bit0, TX ready bit1
         if (a == 0xF201)
         {
@@ -1309,13 +1324,16 @@ public sealed class Cpu6
         if (a >= 0xF140 && a <= 0xF145) return ReadFloppyReg(a);
         if (a == 0xF800) return ffcResult;
         if (a == 0xF801) return ffcStatus;
-        return mem[a];
+        return mem[0x30000 | a];
     }
-    void Write8(ushort a, int v)
+    void Write8(ushort la, int v)
     {
         byte b = (byte)v;
+        int phys = Phys(la);
+        if (phys < 0x3F000) { if (phys < RamBytes) mem[phys] = b; return; }
+        ushort a = (ushort)phys;
         if (a == 0xF200 || a == 0xF208) return; // MUX control/config
-        if (a == 0xF20A || a == 0xF20E) { muxInterruptEnabled = b != 0; mem[a] = b; return; } // MUX interrupt-ish enables used by WIPL
+        if (a == 0xF20A || a == 0xF20E) { muxInterruptEnabled = b != 0; mem[0x30000 | a] = b; return; } // MUX interrupt-ish enables used by WIPL
         if (a == 0xF201)
         {
             var h = TerminalOutput;
@@ -1340,15 +1358,15 @@ public sealed class Cpu6
         if (AnyHawkMounted && a >= 0xF140 && a <= 0xF148) { WriteHawkReg(a, b); return; }
         if (a >= 0xF140 && a <= 0xF145) { WriteFloppyReg(a, b); return; }
         if (a == 0xF800) { WriteFfcCommand(b); return; }
-        mem[a] = b;
+        mem[0x30000 | a] = b;
     }
     ushort Read16(ushort a) { return (ushort)((Read8(a) << 8) | Read8((ushort)(a + 1))); }
     void Write16(ushort a, int v) { Write8(a, v >> 8); Write8((ushort)(a + 1), v); }
     byte Fetch() { return Read8(PC++); }
     ushort Fetch16() { int hi = Fetch(); return (ushort)((hi << 8) | Fetch()); }
 
-    byte Reg(int r) { return Read8((ushort)((ipl << 4) | (r & 15))); }
-    void Reg(int r, int v) { Write8((ushort)((ipl << 4) | (r & 15)), v); }
+    byte Reg(int r) { return mem[(ipl << 4) | (r & 15)]; }   // register file: physical 0x00-0xFF, not subject to the page tables
+    void Reg(int r, int v) { mem[(ipl << 4) | (r & 15)] = (byte)v; }
     ushort RegPair(int r) { r = (r & 7) << 1; return (ushort)((Reg(r) << 8) | Reg(r + 1)); }
     public void SetRegPair(int r, ushort v) { r = (r & 7) << 1; Reg(r, v >> 8); Reg(r + 1, v); }
     void Push(ushort v) { ushort sp = (ushort)(RegPair(SP) - 2); Write16(sp, v); SetRegPair(SP, sp); }
@@ -2100,7 +2118,13 @@ public sealed class Cpu6
     }
     // 0x2E PageTable (MMU page file) instructions: 2E ssssmmnn, per the Centurion wiki (OpC_20-2F).
     // Page tables are stored (8 maps x 32 one-byte entries) but address translation is not modelled yet.
-    public readonly byte[] pageTable = new byte[8 * 32];
+    public readonly byte[] pageTable = InitPageTable();
+    static byte[] InitPageTable()
+    {
+        var t = new byte[8 * 32];
+        for (int m = 0; m < 8; m++) { for (int i = 0; i < 30; i++) t[m * 32 + i] = (byte)i; t[m * 32 + 30] = 0x7E; t[m * 32 + 31] = 0x7F; }
+        return t;
+    }
     void PageTable()
     {
         byte sel = Fetch();
@@ -2120,7 +2144,7 @@ public sealed class Cpu6
         for (int i = 0; i < n; i++)
         {
             int slot = map * 32 + ((first + i) & 31);
-            if ((s & 1) == 0) pageTable[slot] = Read8((ushort)(ea + i)); else Write8((ushort)(ea + i), pageTable[slot]);
+            if ((s & 1) == 0) pageTable[slot] = Read8((ushort)(ea + i)); else Write8((ushort)(ea + i), (byte)((pageTable[slot] & 0x7F) | (MemStatus & 0x80)));
         }
     }
     void Misc8()
@@ -2631,7 +2655,7 @@ public sealed class Cpu6
     }
     public void SetByName(string name, ushort v) { name = name.ToLowerInvariant(); if (name == "pc") PC = v; else if (name == "ax") SetRegPair(AX, v); else if (name == "bx") SetRegPair(BX, v); else if (name == "rt") SetRegPair(RT, v); else if (name == "dx") SetRegPair(DX, v); else if (name == "ex") SetRegPair(EX, v); else if (name == "sp") SetRegPair(SP, v); else if (name == "gx") SetRegPair(GX, v); else if (name == "hx") SetRegPair(HX, v); else throw new ArgumentException("unknown register " + name); }
     public ushort GetRegPair(int r) { return RegPair(r); }
-    public byte Peek(ushort a) { return mem[a]; }
+    public byte Peek(ushort a) { int p = Phys(a); return p >= 0x3F000 ? mem[0x30000 | (p & 0xFFFF)] : p < RamBytes ? mem[p] : (byte)0xFF; }
     public void Poke(ushort a, byte v) { Write8(a, v); }
     public string Flags { get { return FlagString(); } }
     public byte Ipl { get { return ipl; } }

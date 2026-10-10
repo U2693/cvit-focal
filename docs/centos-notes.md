@@ -25,10 +25,25 @@ Resolved by reading Draco's CenturionJS (`src/cards/CPU6/CPU6.ts`) and the wiki'
   inline literal) instead of the old special cases; the loader's `67 4A 86` still works.
 - The "four-byte literal" experiment below was therefore a red herring.
 
-Status: `scripts/bis --hawk CENTOS_12.IMG` (boot keys `H0`) now runs the OS's early setup (page-table writes,
-copying code stubs to `7800`/`7805`) and then loops in a memory-probe routine at `D030-D061` that uses the
-MMU `2E` instructions and byte stores to find the end of RAM, so the next step is modelling page-table reads
-(RPF "set top bit from MSR") and a larger, mapped memory.  Tools: `--trace`, `--regs`, `--dump addr len`.
+## MMU and physical memory (implemented)
+Model taken from CenturionJS (`CPU6Card.ts`) and the wiki:
+- 18-bit physical space; 2 KB pages; 8 maps x 32 entries (`2E` WPF/RPF ops), 7 bits of physical page per entry.
+- Physical = `entry<<11 | addr&0x7FF`.  Default tables: identity for pages 0-29, page 30 -> `0x7E`, 31 -> `0x7F`, so logical
+  `F000-FFFF` is physical `0x3F000-0x3FFFF`, the I/O + boot-ROM window.  Map 0 is active (maps are switched by JSYS/RSYS, not
+  modelled yet).
+- RAM is `[0, --ram-kb)` (default 64 KB); anything else reads `0xFF` and ignores writes (CenturionJS does the same), so RAM-size
+  probing works.  RPF reads return the entry with bit 7 from `MemStatus` (always 0 for now).
+- The register file (low addresses `0x00-0xFF`) is physical and bypasses the page tables.
+
+## Where CentOS stops now
+`scripts/bis --hawk CENTOS_12.IMG` (boot keys `H0`) runs the early setup and then loops at `D030-D061`.  Each pass: `WPF1` page 31 <-
+byte at `D4D5`, write/read-back test of `FFFF`, `F7` (see below), a `memcmp` against `D08A`, then `LDA [D4D4]; B = 0x7D - A; BP loop`.
+Nothing the OS has executed so far changes `D4D4` (= `001E`), so the loop never ends.  Open questions:
+- `F7`: the old wiki page says "copies AW bytes from BW to YW"; biscvit executes it as `STB` via P (which, with P=0, writes into
+  the register file: it is why `A` becomes `F800`).  Trying a block copy made no difference to the loop.
+- `D4D4`/`D4D5` might be a tick counter updated by a clock interrupt (not modelled; `ECK`/`EI` have not run yet), or written by a
+  device/DMA that is not emulated.  The next step is to find the first code that stores to `D4D4`/`D4D5`.
+Tools: `--trace`, `--regs`, `--dump addr len`, `--ram-kb n`.  (Don't trace 30M steps: that is a few GB.)
 
 ## Earlier experiment (superseded): four-byte literal for DIV=
 Making the literal form of `0x78` consume four operand bytes (instead of the two that optest07 suggests)
