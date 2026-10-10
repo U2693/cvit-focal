@@ -6,7 +6,7 @@ emulator.  Register pairs are A,B,X,Y,Z,S,C,P (biscvit calls X/Y/Z/S/C/P
 RT/DX/EX/SP/GX/HX); byte registers are AH,AL,BH,BL,... .
 
 Features
-  * Labels, ``equ`` constants and ``var`` scratch-memory allocation.  Any 16-bit
+  * Labels (``NAME+4`` / ``NAME-7`` also accepted as operands), ``equ`` constants and ``var`` scratch-memory allocation.  Any 16-bit
     operand may be an int or a symbol name (label / equ / var).
   * Relative branches and ``jmp``/``jsr`` (rel8) relax automatically: a branch
     out of range becomes an inverted short branch over a ``jmp``/absolute jump.
@@ -15,6 +15,8 @@ Features
 
 Relative branches are relative to the next instruction.
 """
+
+import re
 
 PAIRS = {"A": 0, "B": 1, "X": 2, "Y": 3, "Z": 4, "S": 5, "C": 6, "P": 7}
 BREGS = {n + h: i * 2 + j for i, n in enumerate("ABXYZSCP") for j, h in enumerate("HL")}
@@ -165,9 +167,14 @@ class Asm:
 
     @staticmethod
     def _resolve(table, sym):
-        if sym not in table:
-            raise AsmError(f"undefined symbol {sym!r}")
-        return table[sym]
+        """Resolve NAME, NAME+N or NAME-N (N decimal or 0x..)."""
+        if sym in table:
+            return table[sym]
+        m = re.fullmatch(r"([A-Za-z_]\w*)\s*([+-])\s*(0x[0-9A-Fa-f]+|\d+)", sym)
+        if m and m.group(1) in table:
+            n = int(m.group(3), 0)
+            return (table[m.group(1)] + (n if m.group(2) == "+" else -n)) & 0xFFFF
+        raise AsmError(f"undefined symbol {sym!r}")
 
     @property
     def labels(self):
@@ -259,12 +266,36 @@ class Asm:
     def inrb(self, r, n=1): return self.raw(0x20, (breg(r) << 4) | (n - 1))
     def dcrb(self, r, n=1): return self.raw(0x21, (breg(r) << 4) | (n - 1))
     def inr_z(self, n=1): return self.inr("Z", n)
+    # MUL/DIV (semantics from optest07.asm).  Result goes to dst: MUL = high word in dst and low word in the
+    # next pair when dst is A/X/Z/C (pair index even), low word only in dst otherwise.  DIV = remainder in dst
+    # and quotient in the next pair when dst is even, quotient only in dst otherwise.
     def mulu(self, src, dst):
-        """(dst:dst+1) = src * dst, unsigned 32-bit (dst = high word).  See Program.cs MulDiv."""
+        """MUL src,dst: src * dst -> dst (:next)."""
         return self.raw(0x77, (pair(src) << 5) | (pair(dst) << 1))
     def divu(self, src, dst):
-        """(dst:dst+1) / src -> dst = remainder, dst+1 = quotient; carry set if remainder 0."""
+        """DIV src,dst: dst / src -> remainder in dst, quotient in next pair (dst even) or in dst (dst odd)."""
         return self.raw(0x78, (pair(src) << 5) | (pair(dst) << 1))
+    def _md(self, op, e, word):
+        self.raw(op, e)
+        return self.u16(word)
+    def mul_imm(self, imm, src, dst=None):
+        """MUL= imm,src[,dst]: imm * src."""
+        return self._md(0x77, ((pair(src) << 1 | 1) << 4) | (pair(dst if dst is not None else src) << 1), imm)
+    def div_imm(self, imm, src, dst=None):
+        """DIV= imm,src[,dst]: src / imm."""
+        return self._md(0x78, ((pair(src) << 1 | 1) << 4) | (pair(dst if dst is not None else src) << 1), imm)
+    def mul_mem(self, addr, src, dst=None):
+        """MUL/ addr,src[,dst]: [addr] * src."""
+        return self._md(0x77, ((pair(src) << 1) << 4) | (pair(dst if dst is not None else src) << 1 | 1), addr)
+    def div_mem(self, addr, src, dst=None):
+        """DIV/ addr,src[,dst]: src / [addr]."""
+        return self._md(0x78, ((pair(src) << 1) << 4) | (pair(dst if dst is not None else src) << 1 | 1), addr)
+    def mul_idx(self, idx, disp, dst):
+        """MUL- idx,disp,dst: [idx+disp] * dst (disp is a 16-bit word)."""
+        return self._md(0x77, ((pair(idx) << 1 | 1) << 4) | (pair(dst) << 1 | 1), disp)
+    def div_idx(self, idx, disp, dst):
+        """DIV- idx,disp,dst: dst / [idx+disp]."""
+        return self._md(0x78, ((pair(idx) << 1 | 1) << 4) | (pair(dst) << 1 | 1), disp)
     def push(self, first, count=1): return self.raw(0x7E, (breg(first) << 4) | (count - 1))
     def pop(self, first, count=1): return self.raw(0x7F, (breg(first) << 4) | (count - 1))
 

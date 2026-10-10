@@ -27,6 +27,7 @@ public static class BiscvitProgram
             bool headless = false;
             bool halt = false;
             bool printRegs = false;
+            var dumps = new List<(ushort, ushort)>();
             int maxSteps = 0;
             for (int i = 0; i < args.Length; i++)
             {
@@ -57,10 +58,11 @@ public static class BiscvitProgram
                 else if (a == "--run") headless = true;
                 else if (a == "--halt") halt = true;
                 else if (a == "--regs") printRegs = true;
+                else if (a == "--dump") { dumps.Add((Hex16(args[++i]), Hex16(args[++i]))); }
                 else if (a == "--max" && i + 1 < args.Length) maxSteps = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
                 else throw new ArgumentException("bad argument: " + a);
             }
-            if (headless) { if (!halt) cpu.Run(maxSteps); if (printRegs) cpu.PrintRegs(); }
+            if (headless) { try { if (!halt) cpu.Run(maxSteps); } catch (Exception ex) when (printRegs || dumps.Count > 0) { Console.Error.WriteLine("biscvit: " + ex.Message); } if (printRegs) cpu.PrintRegs(); foreach (var (da, dl) in dumps) cpu.DumpMem(da, dl); }
             else new Tui(cpu, startRunning: !halt).Run();
             return 0;
         }
@@ -69,7 +71,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--max n]");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--dump addr len] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
         Console.WriteLine("TUI keys: terminal focus is normally console; F12 toggles MUX1 focus/overlay; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
@@ -1552,6 +1554,7 @@ public sealed class Cpu6
         if (svc == 0x56) { RunSystemMember(); return; }
         Unknown();
     }
+<<<<<<< HEAD
     void DebugOut(string s) { foreach (char ch in s) Write8(0xF201, ch); }
     void CedDisplayOut(string s)
     {
@@ -2034,32 +2037,40 @@ public sealed class Cpu6
             default: return $"{pc:X4}: {op:X2}       DB ${op:X2}";
         }
     }
-    // MULU / DIVU (0x77 / 0x78): operand byte = src pair (high nibble) , dst pair (low nibble).
-    // Only the register-register form is modelled; odd (memory) nibbles are not implemented.
-    // Semantics are inferred (the wiki says "32 bit result in adjacent registers"):
-    //   MULU: (dst:dst+1) = src * dst        (dst = high word, dst+1 = low word)
-    //   DIVU: dividend = (dst:dst+1), divisor = src; dst = remainder, dst+1 = quotient (low 16 bits);
-    //         L set when the remainder is zero.  Divide by zero leaves registers alone and clears L.
+    // MUL (0x77) / DIV (0x78), semantics from the Centurion optest07.asm ("Test MUL" / "Test DIV").
+    // Operand byte e: high nibble = src, low nibble = dst; each nibble is pair*2 with bit 0 = "memory form".
+    //   0x00  reg,reg    MUL s,d: s*d        DIV s,d: d / s
+    //   0x10  literal    MUL= imm,s[,d]: imm*s     DIV= imm,s[,d]: s / imm     (imm word follows)
+    //   0x01  direct     MUL/ addr,s[,d]: [addr]*s DIV/ addr,s[,d]: s / [addr] (address word follows)
+    //   0x11  indexed    MUL- s,disp,d: [s+disp]*d DIV- s,disp,d: d / [s+disp] (word displacement follows)
+    // Results go to d: MUL = upper 16 bits in d and lower 16 in the next pair when d is even (A,X,Z,C -> B,Y,S,P),
+    // lower 16 only in d when d is odd.  DIV = remainder in d and quotient in the next pair when d is even,
+    // quotient only in d when d is odd.  L is set when the division leaves a zero remainder.
     void MulDiv()
     {
         byte e = Fetch();
-        if ((e & 0x11) != 0) { Unknown(); return; }
-        int sp = (e >> 4) >> 1, dp = (e & 15) >> 1, dn = (dp + 1) & 7;
-        if (op == 0x77)
+        bool so = (e & 0x10) != 0, dofl = (e & 0x01) != 0;
+        int sp = (e >> 4) >> 1, dp = (e & 15) >> 1;
+        uint x, y;                       // MUL: x*y.  DIV: dividend x, divisor y.
+        bool mul = op == 0x77;
+        if (!so && !dofl) { if (mul) { x = RegPair(sp); y = RegPair(dp); } else { x = RegPair(dp); y = RegPair(sp); } }
+        else if (so && !dofl) { ushort imm = Fetch16(); if (mul) { x = imm; y = RegPair(sp); } else { x = RegPair(sp); y = imm; } }
+        else if (!so && dofl) { ushort m = Read16(Fetch16()); if (mul) { x = m; y = RegPair(sp); } else { x = RegPair(sp); y = m; } }
+        else { ushort disp = Fetch16(); ushort m = Read16((ushort)(RegPair(sp) + disp)); if (mul) { x = m; y = RegPair(dp); } else { x = RegPair(dp); y = m; } }
+        bool wide = (dp & 1) == 0, hasNext = wide;
+        int dn = (dp + 1) & 7;
+        flags = (byte)(flags & ~(N | Z | C));
+        if (mul)
         {
-            uint r = (uint)RegPair(sp) * RegPair(dp);
-            SetRegPair(dp, (ushort)(r >> 16)); SetRegPair(dn, (ushort)r);
-            flags = (byte)(flags & ~(N | Z | C));
+            uint r = x * y;
+            if (hasNext) { SetRegPair(dp, (ushort)(r >> 16)); SetRegPair(dn, (ushort)r); } else SetRegPair(dp, (ushort)r);
             if (r == 0) flags |= Z; if ((r & 0x80000000) != 0) flags |= N;
         }
         else
         {
-            uint divisor = RegPair(sp);
-            if (divisor == 0) { flags = (byte)(flags & ~C); return; }
-            uint dividend = ((uint)RegPair(dp) << 16) | RegPair(dn);
-            uint q = dividend / divisor, rem = dividend % divisor;
-            SetRegPair(dp, (ushort)rem); SetRegPair(dn, (ushort)q);
-            flags = (byte)(flags & ~(N | Z | C));
+            if (y == 0) return;           // divide by zero: registers unchanged, L clear (behaviour unverified)
+            uint q = x / y, rem = x % y;
+            if (hasNext) { SetRegPair(dp, (ushort)rem); SetRegPair(dn, (ushort)q); } else SetRegPair(dp, (ushort)q);
             if ((ushort)q == 0) flags |= Z; if (((ushort)q & 0x8000) != 0) flags |= N; if (rem == 0) flags |= C;
         }
     }
@@ -2566,6 +2577,7 @@ public sealed class Cpu6
 
     void Unknown() { throw new InvalidOperationException(String.Format("unknown/unsupported opcode {0:X2} near {1:X4} next={2:X2} {3:X2} {4:X2} {5:X2} {6:X2} {7:X2}", op, (ushort)(PC - 1), Peek(PC), Peek((ushort)(PC + 1)), Peek((ushort)(PC + 2)), Peek((ushort)(PC + 3)), Peek((ushort)(PC + 4)), Peek((ushort)(PC + 5)))); }
     string FlagString() { char[] s = new char[] { '-', '-', '-', '-' }; if ((flags & C) != 0) s[0] = 'C'; if ((flags & I) != 0) s[1] = 'I'; if ((flags & N) != 0) s[2] = 'N'; if ((flags & Z) != 0) s[3] = 'Z'; return new string(s); }
+    public void DumpMem(ushort a, ushort n) { for (int i = 0; i < n; i += 16) { var sb = new StringBuilder(); sb.Append($"{(ushort)(a + i):X4}:"); for (int j = 0; j < 16 && i + j < n; j++) sb.Append($" {Peek((ushort)(a + i + j)):X2}"); Console.WriteLine(sb.ToString()); } }
     public void PrintRegs() { Console.WriteLine("PC={0:X4} FLAGS={1} IPL={2:X1} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", PC, FlagString(), ipl, RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX)); }
     public void Dump(ushort a, int len) { for (int i = 0; i < len; i += 16) { Console.Write("{0:X4}: ", (ushort)(a + i)); for (int j = 0; j < 16 && i + j < len; j++) Console.Write("{0:X2} ", Read8((ushort)(a + i + j))); Console.WriteLine(); } }
     public void Modify(ushort a)

@@ -44,6 +44,11 @@ class AsmTests(unittest.TestCase):
         self.assertEqual(out[0], 0x15)                         # first branch relaxed (BNZ over JMP)
         self.assertEqual(out[2], 0x71)
 
+    def test_symbol_offsets(self):
+        a = Asm(0x100)
+        a.ldb_i("t-2").label("t").hlt()
+        self.assertEqual(a.bytes(), bytes([0xD0, 0x01, 0x01, 0x00]))
+
     def test_symbols_and_vars(self):
         a = Asm(0x200).vars_at(0x2400)
         self.assertEqual(a.var("V1"), 0x2400)
@@ -100,23 +105,65 @@ class EmuTests(unittest.TestCase):
         regs = dict(re.findall(r"\b([A-Z]{2})=([0-9A-F]{4})", out))
         return {k: int(v, 16) for k, v in regs.items()}, out
 
-    def test_mulu(self):
-        r, _ = self.run_prog(lambda a: a.lda_i(100).ldb_i(1234).mulu("A", "B"))
-        self.assertEqual((r["BX"], r["RT"]), (0x0001, 0xE208))
+    # Expected values follow the Centurion optest07.asm comments for MUL (0x77) and DIV (0x78).
+    def regs(self, build):
+        r, out = self.run_prog(build)
+        return r, re.search(r"FLAGS=(\S+)", out).group(1)
 
-    def test_mulu_overflow_into_high(self):
-        r, _ = self.run_prog(lambda a: a.lda_i(0xFFFF).ldb_i(0xFFFF).mulu("A", "B"))
-        self.assertEqual((r["BX"], r["RT"]), (0xFFFE, 0x0001))
+    def test_mul_reg_reg_even_dst(self):          # MUL B,A: B*A -> A,B
+        r, _ = self.regs(lambda a: a.lda_i(0x3003).ldb_i(6).mulu("B", "A"))
+        self.assertEqual((r["AX"], r["BX"]), (0x0001, 0x2012))
 
-    def test_divu(self):
-        r, out = self.run_prog(lambda a: a.lda_i(100).xfr("A", "X").lda_i(7).ldb_i(0).divu("A", "B"))
-        self.assertEqual((r["BX"], r["RT"]), (2, 14))
-        self.assertNotIn("C", re.search(r"FLAGS=(\S+)", out).group(1))
+    def test_mul_reg_reg_odd_dst_keeps_low_only(self):   # MUL A,B: A*B -> B
+        r, _ = self.regs(lambda a: a.lda_i(0x3003).ldb_i(6).mulu("A", "B"))
+        self.assertEqual((r["AX"], r["BX"]), (0x3003, 0x2012))
 
-    def test_divu_exact_sets_link(self):
-        r, out = self.run_prog(lambda a: a.lda_i(100).xfr("A", "X").lda_i(10).ldb_i(0).divu("A", "B"))
-        self.assertEqual((r["BX"], r["RT"]), (0, 10))
-        self.assertIn("C", re.search(r"FLAGS=(\S+)", out).group(1))
+    def test_mul_imm(self):                       # MUL= 6,A ; MUL= 0x3003,A,B
+        r, _ = self.regs(lambda a: a.lda_i(0x3003).mul_imm(6, "A"))
+        self.assertEqual((r["AX"], r["BX"]), (0x0001, 0x2012))
+        r, _ = self.regs(lambda a: a.lda_i(6).mul_imm(0x3003, "A", "B"))
+        self.assertEqual((r["AX"], r["BX"]), (6, 0x2012))
+
+    def test_mul_mem_and_indexed(self):
+        def prog(a):
+            a.lda_i(256).mul_mem("W", "A").jmp("end").label("W").dw(0x3003).label("end")
+        r, _ = self.regs(prog)
+        self.assertEqual((r["AX"], r["BX"]), (0x0030, 0x0300))
+        def prog2(a):                                         # MUL- B,7,A: *(B+7) * A
+            a.lda_i(256).ldb_i("W-7").mul_idx("B", 7, "A").jmp("end").label("W").dw(0x3003).label("end")
+        r, _ = self.regs(prog2)
+        self.assertEqual((r["AX"], r["BX"]), (0x0030, 0x0300))
+
+    def test_div_reg_reg(self):                   # DIV B,A: A / B -> B, A % B -> A
+        r, _ = self.regs(lambda a: a.lda_i(13).ldb_i(6).divu("B", "A"))
+        self.assertEqual((r["AX"], r["BX"]), (1, 2))
+
+    def test_div_reg_reg_odd_dst(self):           # DIV A,B: B / A -> B
+        r, _ = self.regs(lambda a: a.lda_i(6).ldb_i(13).divu("A", "B"))
+        self.assertEqual((r["AX"], r["BX"]), (6, 2))
+
+    def test_div_imm(self):                       # DIV= 6,A ; DIV= 6,A,B
+        r, _ = self.regs(lambda a: a.lda_i(13).div_imm(6, "A"))
+        self.assertEqual((r["AX"], r["BX"]), (1, 2))
+        r, _ = self.regs(lambda a: a.lda_i(13).div_imm(6, "A", "B"))
+        self.assertEqual((r["AX"], r["BX"]), (13, 2))
+
+    def test_div_exact_sets_link(self):
+        r, flags = self.regs(lambda a: a.lda_i(12).div_imm(6, "A"))
+        self.assertEqual((r["AX"], r["BX"]), (0, 2))
+        self.assertIn("C", flags)
+        _, flags = self.regs(lambda a: a.lda_i(13).div_imm(6, "A"))
+        self.assertNotIn("C", flags)
+
+    def test_div_mem_and_indexed(self):
+        def prog(a):
+            a.lda_i(0x0205).div_mem("W", "A").jmp("end").label("W").dw(0x0100).label("end")
+        r, _ = self.regs(prog)
+        self.assertEqual((r["AX"], r["BX"]), (5, 2))          # 0x205 / 0x100
+        def prog2(a):                                         # DIV- B,7,A: A / *(B+7)
+            a.lda_i(0x0608).ldb_i("W-7").div_idx("B", 7, "A").jmp("end").label("W").dw(0x0100).label("end")
+        r, _ = self.regs(prog2)
+        self.assertEqual((r["AX"], r["BX"]), (8, 6))
 
     def test_relaxed_branch_runs(self):
         def prog(a):
