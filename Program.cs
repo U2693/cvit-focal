@@ -58,6 +58,7 @@ public static class BiscvitProgram
                 else if (a == "--run") headless = true;
                 else if (a == "--halt") halt = true;
                 else if (a == "--regs") printRegs = true;
+                else if (a == "--watch" && i + 2 < args.Length) { cpu.WatchLo = Hex16(args[++i]); cpu.WatchHi = Hex16(args[++i]); }
                 else if (a == "--ram-kb" && i + 1 < args.Length) cpu.RamBytes = int.Parse(args[++i]) * 1024;
                 else if (a == "--dump") { dumps.Add((Hex16(args[++i]), Hex16(args[++i]))); }
                 else if (a == "--max" && i + 1 < args.Length) maxSteps = Int32.Parse(args[++i], CultureInfo.InvariantCulture);
@@ -72,7 +73,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--ram-kb n] [--dump addr len] [--max n]");
+        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--watch lo hi] [--ram-kb n] [--dump addr len] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
         Console.WriteLine("TUI keys: terminal focus is normally console; F12 toggles MUX1 focus/overlay; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
@@ -1164,6 +1165,8 @@ public sealed class Cpu6
     // I/O + boot-ROM window (logical F000-FFFF under the default map).  Nonexistent memory reads 0xFF.
     readonly byte[] mem = new byte[0x40000];
     public int RamBytes = 0x10000;
+    public int WatchLo = -1, WatchHi = -1;   // --watch lo hi: log writes to this physical range
+    ushort curPc;
     public byte MemStatus;                    // MSR: bit 7 is returned in the top bit of page-table reads (not driven yet)
     int mmuMap;                               // active page-table map (0 = system); changed by JSYS/RSYS (not modelled yet)
     int Phys(ushort a) { return ((pageTable[(mmuMap << 5) | (a >> 11)] & 0x7F) << 11) | (a & 0x7FF); }
@@ -1333,6 +1336,7 @@ public sealed class Cpu6
     {
         byte b = (byte)v;
         int phys = Phys(la);
+        if (WatchLo >= 0 && phys >= WatchLo && phys <= WatchHi) Console.Error.WriteLine("WATCH {0:X5} <= {1:X2}  pc={2:X4} (logical {3:X4}) ipl={4:X}", phys, b, curPc, la, ipl);
         if (phys < 0x3F000) { if (phys < RamBytes) mem[phys] = b; return; }
         WriteDev((ushort)phys, b);
     }
@@ -1415,7 +1419,7 @@ public sealed class Cpu6
         }
         ServiceInterrupts();
         if (clockEnabled && ++clockCycles >= ClockPeriod) { clockCycles = 0; clockTick = true; }
-        ushort oldpc = PC; op = Fetch();
+        ushort oldpc = PC; curPc = oldpc; op = Fetch();
         if (Trace) Console.Error.WriteLine("{0:X4}: {1:X2} {2} AX={3:X4} BX={4:X4} RT={5:X4} DX={6:X4} EX={7:X4} SP={8:X4} GX={9:X4} HX={10:X4}", oldpc, op, FlagString(), RegPair(AX), RegPair(BX), RegPair(RT), RegPair(DX), RegPair(EX), RegPair(SP), RegPair(GX), RegPair(HX));
         if (op < 0x10) Low(); else if (op < 0x20) Branch(); else if (op < 0x30) Misc8(); else if (op < 0x40) Misc16(); else if (op < 0x50) Alu8(); else if (op < 0x60) Alu16(); else if (op == 0x66) Svc(); else if (op == 0x67) MemOp(); else if (op < 0x70) Rt(); else if (op < 0x80) Jump(); else LoadStore();
     }
