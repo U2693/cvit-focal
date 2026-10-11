@@ -48,7 +48,7 @@ def build_command(welcome_sector):
 
     a.label("cmd_help")
     a.jsr_abs("drain_line")
-    a.print("COMMANDS: CAT, TYPE WELCOME, RUN NAME, PREFIX, HELP, .STA, .DEBUG, .CED, QUIT\r\n")
+    a.print("COMMANDS: CAT, TYPE WELCOME, RUN FOCAL, RUN NAME, PREFIX, HELP, .STA, .DEBUG, .CED, QUIT\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_sta")

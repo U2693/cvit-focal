@@ -37,7 +37,7 @@ def collect_library_members(library_root, generated=None, priority=None, last=No
     members = []
     for n in ordered:
         p = files[n]
-        data = generated.get(p.name, p.read_bytes())
+        data = generated[p.name] if p.name in generated else p.read_bytes()
         members.append((n, p, data))
     return members
 

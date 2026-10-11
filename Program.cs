@@ -737,11 +737,16 @@ public sealed class CvitFileSystem
         data = Array.Empty<byte>();
         if (!TryFindMember(prefix, name, out int page, out int capacity)) return false;
         if (!TryLibrary(prefix, out int dataSector, out _)) return false;
-        int offset = MemberOffset(dataSector, page);
-        int end = capacity;
-        while (end > 0 && (image[offset + end - 1] == 0 || image[offset + end - 1] == 0x20)) end--;
+        byte[] raw = ReadLibraryPages(dataSector, page, capacity);
+        int end = raw.Length;
+        if (raw.Length >= 9 && raw[0] == (byte)'C' && raw[1] == (byte)'V')
+        {
+            int declared = 9 + ((raw[6] << 8) | raw[7]);
+            if (declared <= raw.Length) end = declared;
+        }
+        else while (end > 0 && (raw[end - 1] == 0 || raw[end - 1] == 0x20)) end--;
         data = new byte[end];
-        Buffer.BlockCopy(image, offset, data, 0, end);
+        Buffer.BlockCopy(raw, 0, data, 0, end);
         return true;
     }
 
@@ -870,6 +875,20 @@ public sealed class CvitFileSystem
         return false;
     }
 
+    byte[] ReadLibraryPages(int dataSector, int page, int count)
+    {
+        byte[] data = new byte[count];
+        for (int done = 0; done < count;)
+        {
+            int p = page + done / PageSize;
+            int offset = MemberOffset(dataSector, p);
+            int n = Math.Min(PageSize, count - done);
+            if (!RangeOk(offset, n)) break;
+            Buffer.BlockCopy(image, offset, data, done, n);
+            done += n;
+        }
+        return data;
+    }
     int MemberOffset(int dataSector, int page) => imageOffsetForSector(dataSector + page / 2) + (page & 1) * PageSize;
     bool RangeOk(int offset, int count) => offset >= 0 && offset + count <= image.Length;
 
@@ -1590,13 +1609,7 @@ public sealed class Cpu6
     void Svc()
     {
         byte svc = Fetch();
-        if (svc == 0x40 && Read8(0x0806) == 0x71)
-        {
-            Push(RegPair(RT));
-            SetRegPair(RT, PC);
-            PC = 0x0806;
-            return;
-        }
+        if (svc == 0x40) { CvitConsoleSvc(); return; }
         if (svc == 0x41) { DebugRegs(); return; }
         if (svc == 0x42) { DebugDump(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x43) { DebugDisasm(ReadDebugAddress(0x0800)); return; }
@@ -1613,6 +1626,31 @@ public sealed class Cpu6
         PushB((byte)mmuMap); PushB(ipl); Push(RegPair(RT)); SetRegPair(RT, PC); PushB(svc);
         mmuMap = 0; jsysDepth++;
         PC = 0x0100;
+    }
+    void CvitConsoleSvc()
+    {
+        byte fn = Reg(BL);
+        if (fn == 1) { Write8(0xF201, Reg(AL)); return; }
+        if (fn == 2)
+        {
+            ushort p = RegPair(EX);
+            for (int i = 0; i < 4096; i++)
+            {
+                byte ch = Read8((ushort)(p + i));
+                if (ch == 0) break;
+                Write8(0xF201, ch);
+            }
+            return;
+        }
+        if (fn == 3) { Reg(AL, terminalInput.Count != 0 ? terminalInput.Dequeue() : 0); Flag8(Reg(AL), false, 0); return; }
+        if (Read8(0x0806) == 0x71)
+        {
+            Push(RegPair(RT));
+            SetRegPair(RT, PC);
+            PC = 0x0806;
+            return;
+        }
+        Unknown();
     }
     int jsysDepth;
     void PushB(byte v) { ushort sp = (ushort)(RegPair(SP) - 1); Write8(sp, v); SetRegPair(SP, sp); }
@@ -1786,9 +1824,23 @@ public sealed class Cpu6
         CvitFileSystem fs = CvitFsForDevice(parsed.Device);
         if (fs == null) { DebugOut("?NO HAWK\r\n"); return; }
         if (!fs.TryReadMember(parsed.Member, out byte[] data)) { DebugOut("?NO FILE\r\n"); return; }
-        if (0x0100 + data.Length > mem.Length) { DebugOut("?TOO BIG\r\n"); return; }
-        Array.Clear(mem, 0x0100, Math.Min(0x1000, mem.Length - 0x0100));
+        if (data.Length >= 9 && data[0] == (byte)'C' && data[1] == (byte)'V')
+        {
+            ushort load = (ushort)((data[2] << 8) | data[3]);
+            ushort entry = (ushort)((data[4] << 8) | data[5]);
+            int len = (data[6] << 8) | data[7];
+            if (9 + len > data.Length || load + len > RamBytes) { DebugOut("?TOO BIG\r\n"); return; }
+            Buffer.BlockCopy(data, 9, mem, load, len);
+            Push(RegPair(RT));
+            SetRegPair(RT, PC);
+            PC = entry;
+            return;
+        }
+        if (0x0100 + data.Length > RamBytes) { DebugOut("?TOO BIG\r\n"); return; }
+        Array.Clear(mem, 0x0100, Math.Min(0x1000, RamBytes - 0x0100));
         Buffer.BlockCopy(data, 0, mem, 0x0100, data.Length);
+        Push(RegPair(RT));
+        SetRegPair(RT, PC);
         PC = 0x0100;
     }
     void CatalogSystem()
