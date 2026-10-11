@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CPU6 differential oracle</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; line-height: 1.45; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { background: #f6f8fa; padding: 1rem; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: .4rem .55rem; text-align: left; vertical-align: top; }
+    th { background: #f6f8fa; }
+    .note { border-left: 4px solid #888; padding-left: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Using Meisaka's CPU6 implementation as an oracle</h1>
+
+  <p>This document describes a differential-testing harness for <b>biscvit</b>.
+  Meisaka's CPU6 implementation will be treated as a reference machine: both
+  implementations receive the same initial state, execute one instruction, and
+  have their resulting states compared. The purpose is to build a compatible
+  implementation in biscvit while retaining the freedom to optimize its inner
+  loops later.</p>
+
+  <h2>Goals</h2>
+  <ul>
+    <li>Find instruction-decoding and execution differences with a reproducible test case.</li>
+    <li>Test one instruction at a time rather than trying to infer errors from a long OS boot.</li>
+    <li>Separate architectural CPU behavior from interrupts, clocks, and device behavior.</li>
+    <li>Use randomized initial states after the hand-written tests establish the basic semantics.</li>
+  </ul>
+
+  <h2>Known oracle implementation</h2>
+  <p>The reference source is available on <code>playa</code> at:</p>
+  <pre><code>/Users/rsbohn/build/CenturionComputer/Emulators/Meisaka/Emu 0.22/src/cen.ts</code></pre>
+  <p>The CPU executor is <code>UMCPU6</code>, whose single-instruction entry point is
+  <code>step()</code>. Its main state fields are <code>mem</code>, <code>reg</code>,
+  <code>page</code>, <code>_pc</code>, <code>cc</code>, <code>level</code>, and
+  <code>registers</code>. <code>SysMem</code> supplies the byte-level memory
+  interface. The compiled JavaScript is also present, but the TypeScript source
+  is the better adapter target.</p>
+
+  <p>This changes the first milestone from “locate the oracle” to “extract and
+  wrap the existing CPU core.” The source is browser-oriented and includes UI
+  globals, so it may need a small Node-compatible extraction or a purpose-built
+  adapter. Do not make the browser application itself the protocol boundary.</p>
+
+  <table>
+    <tr><th>Meisaka state</th><th>biscvit state</th></tr>
+    <tr><td><code>A</code>, <code>B</code>, <code>X</code>, <code>Y</code>, <code>Z</code>, <code>S</code>, <code>C</code>, <code>P</code></td><td><code>AX</code>, <code>BX</code>, <code>RT</code>, <code>DX</code>, <code>EX</code>, <code>SP</code>, <code>GX</code>, <code>HX</code></td></tr>
+    <tr><td><code>level</code></td><td><code>ipl</code></td></tr>
+    <tr><td><code>_pc</code></td><td><code>PC</code></td></tr>
+    <tr><td><code>cc</code> (<code>V/M/F/L</code> representation)</td><td>CPU6 flags (<code>C/N/Z/I</code> representation)</td></tr>
+  </table>
+
+  <p>The adapter must explicitly translate register and condition-code formats;
+  it must not compare the raw <code>cc</code> byte to biscvit's flags byte.
+  Meisaka's <code>showreg()</code>, <code>pcfetch()</code>, and
+  <code>pcfetchw()</code> methods are useful references while building the
+  adapter.</p>
+
+  <h2>Execution model</h2>
+  <pre><code>initial state + instruction bytes
+          | \
+          |  \
+          v   v
+      oracle  biscvit
+          |   |
+          +---+--&gt; normalized state comparison</code></pre>
+
+  <p>One test step means one call to each implementation's normal single-step
+  routine. An instruction may consume multiple bytes, so “one opcode” means
+  one complete CPU6 instruction, not one fetched byte. The harness must capture
+  the state immediately after that step.</p>
+
+  <p class="note"><b>Initial scope:</b> disable interrupt delivery, clock advancement,
+  terminal input, and device side effects. This produces a deterministic core-ISA
+  oracle. Add those features in separate test suites once ordinary instruction
+  behavior matches.</p>
+
+  <h2>State to exchange</h2>
+  <p>The normalized state should include every architecturally observable value:</p>
+  <table>
+    <tr><th>Category</th><th>Fields</th></tr>
+    <tr><td>Control</td><td><code>PC</code>, halted/trap/unknown-op status</td></tr>
+    <tr><td>Registers</td><td>All sixteen byte registers, or the eight word pairs (<code>AX</code>, <code>BX</code>, <code>RT</code>, <code>DX</code>, <code>EX</code>, <code>SP</code>, <code>GX</code>, <code>HX</code>)</td></tr>
+    <tr><td>Flags</td><td>Carry, negative, zero, and interrupt-enable state</td></tr>
+    <tr><td>Privilege/context</td><td>Current IPL, interlevel registers, and any register-file bank state</td></tr>
+    <tr><td>Memory</td><td>Changed bytes, including writes through the active address translation</td></tr>
+    <tr><td>MMU</td><td>Page-table contents and active map, when relevant</td></tr>
+    <tr><td>Devices</td><td>Only in device-specific suites; avoid them in core-ISA tests</td></tr>
+  </table>
+
+  <p>Memory should be represented sparsely in the external protocol. The test
+  case supplies only initialized regions, and the response reports changed
+  bytes. A complete memory image can still be used internally by either CPU.</p>
+
+  <h2>Suggested JSON-lines protocol</h2>
+  <p>A long-lived process avoids process-startup overhead when running thousands
+  of cases. It reads one JSON request per line and emits one JSON response per
+  line.</p>
+
+  <h3>Request</h3>
+  <pre><code>{
+  "op": "step",
+  "events": { "interrupts": false, "clock": false, "devices": false },
+  "state": {
+    "pc": 256,
+    "ipl": 0,
+    "flags": 0,
+    "regs": ["0000", "0000", "0000", "0000", "0000", "FFFE", "0000", "0000"],
+    "memory": [{ "address": 256, "bytes": "50 12 34" }],
+    "interlevel": []
+  }
+}</code></pre>
+
+  <h3>Response</h3>
+  <pre><code>{
+  "ok": true,
+  "decoded": "...",
+  "state": {
+    "pc": 259,
+    "ipl": 0,
+    "flags": 4,
+    "regs": ["0000", "0000", "0000", "0000", "0000", "FFFE", "0000", "0000"],
+    "writes": [{ "address": 4096, "old": 0, "new": 42 }],
+    "halted": false
+  }
+}</code></pre>
+
+  <p>The <code>decoded</code> field is useful diagnostic information but is not
+  itself the compatibility criterion. The comparator should use machine state,
+  not matching disassembly text.</p>
+
+  <h2>biscvit integration</h2>
+  <p>Add a test-facing snapshot and restore API to <code>Cpu6</code>, rather than
+  scraping trace or console output:</p>
+  <pre><code>CpuSnapshot Snapshot();
+void Restore(CpuSnapshot state);</code></pre>
+
+  <p>The snapshot needs access to flags, IPL, the register file, interlevel
+  registers, memory, MMU state, and halt state. Existing public facilities such
+  as <code>Cpu6.Step()</code>, <code>PC</code>, <code>SetRegPair()</code>, and
+  <code>Translate()</code> can remain useful for the interactive monitor, but
+  the differential runner should use the snapshot API for exact setup.</p>
+
+  <p>A biscvit oracle-server mode can then translate JSON requests into:</p>
+  <ol>
+    <li>construct or reset a CPU;</li>
+    <li>restore the supplied state and instruction memory;</li>
+    <li>disable external events for the core suite;</li>
+    <li>call <code>Step()</code> once;</li>
+    <li>emit the normalized post-step state and memory writes.</li>
+  </ol>
+
+  <h2>Test progression</h2>
+  <ol>
+    <li><b>Protocol smoke tests:</b> NOP, HALT, and flag set/clear instructions.</li>
+    <li><b>Hand-written instruction cases:</b> one representative for every opcode family and addressing mode.</li>
+    <li><b>Boundary cases:</b> zero, sign-bit, carry/borrow, page boundaries, stack wraparound, and unaligned/overlapping memory operations where legal.</li>
+    <li><b>Randomized cases:</b> random registers, flags, safe RAM contents, and legal instruction encodings.</li>
+    <li><b>System cases:</b> MMU operations, interlevel operations, interrupts, and devices in isolated suites.</li>
+    <li><b>Regression corpus:</b> retain every minimized mismatch as a permanent test.</li>
+  </ol>
+
+  <h2>Comparison rules</h2>
+  <p>On a mismatch, report the seed, initial state, instruction bytes, oracle
+  state, biscvit state, and the first differing field. The report should also
+  show the disassembly and a memory diff around every changed address.</p>
+
+  <p>Not every field is necessarily defined by every instruction. The test
+  harness should maintain per-instruction comparison masks for fields that are
+  architecturally unchanged, undefined, or implementation-specific. It must
+  not turn an unspecified result into a false failure.</p>
+
+  <p>Tests involving MMIO need explicit semantics for reads and writes because
+  reads may consume input and writes may produce output. Keep those tests out
+  of the core suite, or provide a deterministic mock-device state to both
+  implementations.</p>
+
+  <h2>Repository layout</h2>
+  <pre><code>oracle/
+  protocol.md
+  state-format.md
+  cases/
+  compare.py
+  run-differential.py
+
+tests/cpu6/
+  ...</code></pre>
+
+  <h2>First implementation milestone</h2>
+  <ol>
+    <li>Make the Meisaka <code>Emu 0.22/src/cen.ts</code> source available to the adapter build and retain its upstream version identity.</li>
+    <li>Extract the smallest usable subset containing <code>UMCPU6</code>, <code>SysMem</code>, register views, opcode tables, and required helpers.</li>
+    <li>Provide deterministic memory callbacks and stub or disable UI, parity-break, device, and interrupt side effects.</li>
+    <li>Define the normalized state format and translate Meisaka's register/condition-code representation.</li>
+    <li>Add <code>Cpu6</code> snapshot/restore support in biscvit.</li>
+    <li>Add a persistent biscvit JSON-lines step server.</li>
+    <li>Run a handful of deterministic core instructions through both adapters.</li>
+    <li>Only then add randomized generation and the full opcode corpus.</li>
+  </ol>
+
+  <p>The oracle should remain a development and verification dependency. The
+  shipped biscvit emulator must not depend on it at runtime; after behavior is
+  matched, the oracle-driven tests become a fast regression suite for future
+  optimizations and opcode fixes.</p>
+</body>
+</html>
