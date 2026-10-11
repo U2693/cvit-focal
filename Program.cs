@@ -1446,8 +1446,13 @@ public sealed class Cpu6
         switch (op)
         {
             case 0x00: Halted = true; break; case 0x01: break;
-            case 0x02: flags |= N; break; case 0x03: flags &= unchecked((byte)~N); break;
-            case 0x04: flags |= I; break; case 0x05: flags &= unchecked((byte)~I); break;
+            // Meisaka's CPU6 condition-code names are V/M/F/L: zero, minus,
+            // fault/flag, and link.  Our storage names remain Z/N/I/C, so SF/RF
+            // operate on I rather than N, while SL/RL operate on carry/link.
+            case 0x02: flags |= I; break; case 0x03: flags &= unchecked((byte)~I); break;
+            // Meisaka's UMCPU6 core leaves EI/DI as no-ops in its deterministic
+            // instruction path; interrupt delivery is outside this core step.
+            case 0x04: break; case 0x05: break;
             case 0x06: flags |= C; break; case 0x07: flags &= unchecked((byte)~C); break;
             case 0x08: flags = (byte)(flags ^ C); break;
             case 0x09: PC = RegPair(RT); SetRegPair(RT, Pop()); break;
@@ -1464,8 +1469,10 @@ public sealed class Cpu6
         bool t;
         switch (op & 15)
         {
+            // Match Meisaka's branch table: BL/BF branch when link/F is set;
+            // BNL/BNF branch when the corresponding condition is clear.
             case 0: t = (flags & C) != 0; break; case 1: t = (flags & C) == 0; break;
-            case 2: t = (flags & N) != 0; break; case 3: t = (flags & N) == 0; break;
+            case 2: t = (flags & I) != 0; break; case 3: t = (flags & I) == 0; break;
             case 4: t = (flags & Z) != 0; break; case 5: t = (flags & Z) == 0; break;
             case 6: t = (flags & N) != 0; break; // BM: branch on minus
             case 7: t = (flags & N) == 0; break; // BP: branch on plus
@@ -2221,7 +2228,7 @@ public sealed class Cpu6
     void Misc8()
     {
         int r = AL, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x22) { Reg(enc >> 4, enc & 15); Flag8(enc & 15, false, 0); return; } else if (op == 0x20 || op == 0x21 || (op >= 0x24 && op <= 0x27)) { r = enc >> 4; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 4; }
-        switch (op) { case 0x20: while (count-- > 0) Inc8(r); break; case 0x21: while (count-- > 0) Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) Shr8(r); break; case 0x25: while (count-- > 0) Shl8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: PageTable(); break; case 0x2F: Dma(); break; default: Unknown(); break; }
+        switch (op) { case 0x20: while (count-- > 0) Inc8(r); break; case 0x21: while (count-- > 0) Dec8(r); break; case 0x22: Reg(r, 0); Flag8(0, false, 0); break; case 0x23: Reg(r, ~Reg(r)); Flag8(Reg(r), false, 0); break; case 0x24: while (count-- > 0) ShiftLeftNoFault8(r); break; case 0x25: while (count-- > 0) ShiftLeftFault8(r); break; case 0x26: while (count-- > 0) Rrc8(r); break; case 0x27: while (count-- > 0) Rlc8(r); break; case 0x28: Inc8(AL); break; case 0x29: Dec8(AL); break; case 0x2A: Reg(AL, 0); Flag8(0, false, 0); break; case 0x2B: Reg(AL, ~Reg(AL)); Flag8(Reg(AL), false, 0); break; case 0x2C: Shr8(AL); break; case 0x2D: Shl8(AL); break; case 0x2E: PageTable(); break; case 0x2F: Dma(); break; default: Unknown(); break; }
     }
     // INR/DCR/CLR/IVR/SRR/SLR/RRR/RLR (0x30-0x37) with an odd register nibble operate on a memory word:
     //   3x 1c aaaa      op [aaaa]            (nibble 1 = "A" slot = direct address)
@@ -2251,7 +2258,7 @@ public sealed class Cpu6
     void Misc16()
     {
         int r = AX, count = 1; if ((op & 8) == 0) { byte enc = Fetch(); if ((enc & 0x10) != 0 && op <= 0x37) { MemRc(enc); return; } if ((enc & 15) != 0) { if (op == 0x22 && enc == 0x32) flags |= Z; else if (op == 0x32) { SetRegPair((enc >> 4) >> 1, (ushort)(enc & 15)); Flag16(enc & 15, false, 0); return; } else if (op == 0x33) r = (enc >> 4) >> 1; else if (op == 0x30 || op == 0x31 || (op >= 0x34 && op <= 0x37)) { r = (enc >> 4) >> 1; count = (enc & 15) + 1; } else { Unknown(); return; } } else r = enc >> 5; }
-        switch (op) { case 0x30: while (count-- > 0) Inc16(r); break; case 0x31: while (count-- > 0) Dec16(r); break; case 0x32: SetRegPair(r, 0); Flag16(0, false, 0); break; case 0x33: SetRegPair(r, (ushort)~RegPair(r)); Flag16(RegPair(r), false, 0); break; case 0x34: while (count-- > 0) Shr16(r); break; case 0x35: while (count-- > 0) Shl16(r); break; case 0x36: while (count-- > 0) Rrc16(r); break; case 0x37: while (count-- > 0) Rlc16(r); break; case 0x38: Inc16(AX); break; case 0x39: Dec16(AX); break; case 0x3A: SetRegPair(AX, 0); Flag16(0, false, 0); break; case 0x3B: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break; case 0x3C: Shr16(AX); break; case 0x3D: Shl16(AX); break; case 0x3E: Inc16(RT); break; case 0x3F: Dec16(RT); break; }
+        switch (op) { case 0x30: while (count-- > 0) Inc16(r); break; case 0x31: while (count-- > 0) Dec16(r); break; case 0x32: SetRegPair(r, 0); Flag16(0, false, 0); break; case 0x33: SetRegPair(r, (ushort)~RegPair(r)); Flag16(RegPair(r), false, 0); break; case 0x34: while (count-- > 0) ShiftLeftNoFault16(r); break; case 0x35: while (count-- > 0) ShiftLeftFault16(r); break; case 0x36: while (count-- > 0) Rrc16(r); break; case 0x37: while (count-- > 0) Rlc16(r); break; case 0x38: Inc16(AX); break; case 0x39: Dec16(AX); break; case 0x3A: SetRegPair(AX, 0); Flag16(0, false, 0); break; case 0x3B: SetRegPair(AX, (ushort)~RegPair(AX)); Flag16(RegPair(AX), false, 0); break; case 0x3C: Shr16(AX); break; case 0x3D: Shl16(AX); break; case 0x3E: Inc16(RT); break; case 0x3F: Dec16(RT); break; }
     }
     void Alu8()
     {
@@ -2714,14 +2721,46 @@ public sealed class Cpu6
         return true;
     }
 
-    void Inc8(int r) { int v = Reg(r) + 1; Reg(r, v); Flag8(v, false, 0); } void Dec8(int r) { int v = Reg(r) - 1; Reg(r, v); Flag8(v, false, 0); }
+    void Arith8(int lhs, int rhs, bool subtract)
+    {
+        lhs &= 0xFF; rhs &= 0xFF;
+        int transformed = subtract ? (rhs ^ 0xFF) : rhs;
+        int raw = lhs + transformed + (subtract ? 1 : 0), v = raw & 0xFF;
+        int f = raw > 0xFF ? (I | C) : 0;
+        if (((lhs & 0x7F) + (transformed & 0x7F) + (subtract ? 1 : 0)) > 0x7F) f ^= I;
+        if (v == 0) f |= Z; if ((v & 0x80) != 0) f |= N;
+        flags = (byte)((flags & 0x0F) | f);
+    }
+    void Arith16(int lhs, int rhs, bool subtract)
+    {
+        lhs &= 0xFFFF; rhs &= 0xFFFF;
+        int transformed = subtract ? (rhs ^ 0xFFFF) : rhs;
+        int raw = lhs + transformed + (subtract ? 1 : 0), v = raw & 0xFFFF;
+        int f = raw > 0xFFFF ? (I | C) : 0;
+        if (((lhs & 0x7FFF) + (transformed & 0x7FFF) + (subtract ? 1 : 0)) > 0x7FFF) f ^= I;
+        if (v == 0) f |= Z; if ((v & 0x8000) != 0) f |= N;
+        flags = (byte)((flags & 0x0F) | f);
+    }
+    void Inc8(int r) { int old = Reg(r); Reg(r, old + 1); Arith8(old, 1, false); }
+    void Dec8(int r) { int old = Reg(r); Reg(r, old - 1); Arith8(old, 1, true); }
     void Add8(int d, int s) { int v = Reg(d) + Reg(s); Reg(d, v); Flag8(v, true, v & 0x100); } void Sub8(int d, int s) { int v = Reg(s) - Reg(d); Reg(d, v); Flag8(v, true, v >= 0 ? 1 : 0); } // dst = src - dst; L set when no borrow
     void And8(int d, int s) { int v = Reg(d) & Reg(s); Reg(d, v); Flag8(v, true, 0); } void Or8(int d, int s) { int v = Reg(d) | Reg(s); Reg(d, v); Flag8(v, true, 0); } void Xor8(int d, int s) { int v = Reg(d) ^ Reg(s); Reg(d, v); Flag8(v, true, 0); }
-    void Shl8(int r) { int v = Reg(r); Reg(r, v << 1); Flag8(v << 1, true, v & 0x80); } void Shr8(int r) { int v = Reg(r); Reg(r, v >> 1); Flag8(v >> 1, true, v & 1); } void Rlc8(int r) { int v = Reg(r); int c = v & 0x80; v = ((v << 1) | ((flags & C) != 0 ? 1 : 0)) & 0xFF; Reg(r, v); Flag8(v, true, c); } void Rrc8(int r) { int v = Reg(r); int c = v & 1; v = (v >> 1) | ((flags & C) != 0 ? 0x80 : 0); Reg(r, v); Flag8(v, true, c); }
-    void Inc16(int r) { int v = RegPair(r) + 1; SetRegPair(r, (ushort)v); Flag16(v, false, 0); } void Dec16(int r) { int v = RegPair(r) - 1; SetRegPair(r, (ushort)v); Flag16(v, false, 0); }
+    void SetShiftFlags(int value, int width, int fault, int link)
+    {
+        int mask = width == 8 ? 0xFF : 0xFFFF, sign = width == 8 ? 0x80 : 0x8000;
+        value &= mask; flags = (byte)((flags & 0x0F) | (fault != 0 ? I : 0) | (link != 0 ? C : 0));
+        if (value == 0) flags |= Z; if ((value & sign) != 0) flags |= N;
+    }
+    void ShiftLeftNoFault8(int r) { int v = Reg(r), link = (v >> 7) & 1; v <<= 1; Reg(r, v); SetShiftFlags(v, 8, 0, link); }
+    void ShiftLeftFault8(int r) { int v = Reg(r), link = (v >> 7) & 1; int fault = ((((v & 0x80) != 0 ? 0xFF : 0) ^ v) & 0x40) != 0 ? 1 : 0; v <<= 1; Reg(r, v); SetShiftFlags(v, 8, fault, link); }
+    void Shl8(int r) { ShiftLeftFault8(r); } void Shr8(int r) { int v = Reg(r); Reg(r, v >> 1); Flag8(v >> 1, true, v & 1); } void Rlc8(int r) { int v = Reg(r); int c = v & 0x80; v = ((v << 1) | ((flags & C) != 0 ? 1 : 0)) & 0xFF; Reg(r, v); Flag8(v, true, c); } void Rrc8(int r) { int v = Reg(r); int c = v & 1; v = (v >> 1) | ((flags & C) != 0 ? 0x80 : 0); Reg(r, v); Flag8(v, true, c); }
+    void Inc16(int r) { int old = RegPair(r); SetRegPair(r, (ushort)(old + 1)); Arith16(old, 1, false); }
+    void Dec16(int r) { int old = RegPair(r); SetRegPair(r, (ushort)(old - 1)); Arith16(old, 1, true); }
     void Add16(int d, int s) { int v = RegPair(d) + RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, v & 0x10000); } void Sub16(int d, int s) { int v = RegPair(s) - RegPair(d); SetRegPair(d, (ushort)v); Flag16(v, true, v >= 0 ? 1 : 0); }
     void And16(int d, int s) { int v = RegPair(d) & RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); } void Or16(int d, int s) { int v = RegPair(d) | RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); } void Xor16(int d, int s) { int v = RegPair(d) ^ RegPair(s); SetRegPair(d, (ushort)v); Flag16(v, true, 0); }
-    void Shl16(int r) { int v = RegPair(r); SetRegPair(r, (ushort)(v << 1)); Flag16(v << 1, true, v & 0x8000); } void Shr16(int r) { int v = RegPair(r); SetRegPair(r, (ushort)(v >> 1)); Flag16(v >> 1, true, v & 1); } void Rlc16(int r) { int v = RegPair(r); int c = v & 0x8000; v = ((v << 1) | ((flags & C) != 0 ? 1 : 0)) & 0xFFFF; SetRegPair(r, (ushort)v); Flag16(v, true, c); } void Rrc16(int r) { int v = RegPair(r); int c = v & 1; v = (v >> 1) | ((flags & C) != 0 ? 0x8000 : 0); SetRegPair(r, (ushort)v); Flag16(v, true, c); }
+    void ShiftLeftNoFault16(int r) { int v = RegPair(r), link = (v >> 15) & 1; v <<= 1; SetRegPair(r, (ushort)v); SetShiftFlags(v, 16, 0, link); }
+    void ShiftLeftFault16(int r) { int v = RegPair(r), link = (v >> 15) & 1; int fault = ((((v & 0x8000) != 0 ? 0xFFFF : 0) ^ v) & 0x4000) != 0 ? 1 : 0; v <<= 1; SetRegPair(r, (ushort)v); SetShiftFlags(v, 16, fault, link); }
+    void Shl16(int r) { ShiftLeftFault16(r); } void Shr16(int r) { int v = RegPair(r); SetRegPair(r, (ushort)(v >> 1)); Flag16(v >> 1, true, v & 1); } void Rlc16(int r) { int v = RegPair(r); int c = v & 0x8000; v = ((v << 1) | ((flags & C) != 0 ? 1 : 0)) & 0xFFFF; SetRegPair(r, (ushort)v); Flag16(v, true, c); } void Rrc16(int r) { int v = RegPair(r); int c = v & 1; v = (v >> 1) | ((flags & C) != 0 ? 0x8000 : 0); SetRegPair(r, (ushort)v); Flag16(v, true, c); }
 
     void Unknown() { throw new InvalidOperationException(String.Format("unknown/unsupported opcode {0:X2} near {1:X4} next={2:X2} {3:X2} {4:X2} {5:X2} {6:X2} {7:X2}", op, (ushort)(PC - 1), Peek(PC), Peek((ushort)(PC + 1)), Peek((ushort)(PC + 2)), Peek((ushort)(PC + 3)), Peek((ushort)(PC + 4)), Peek((ushort)(PC + 5)))); }
     string FlagString() { char[] s = new char[] { '-', '-', '-', '-' }; if ((flags & C) != 0) s[0] = 'C'; if ((flags & I) != 0) s[1] = 'I'; if ((flags & N) != 0) s[2] = 'N'; if ((flags & Z) != 0) s[3] = 'Z'; return new string(s); }
