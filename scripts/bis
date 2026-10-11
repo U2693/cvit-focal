@@ -1,8 +1,48 @@
-#
-DISK_CVIT=out/os.img
-DISK_DISK6=disks/opsys.img
-dotnet run -- \
-    --boot-rom roms/bootstrap_unscrambled.bin \
-    --hawk0 $DISK_CVIT \
-    --hawk1 $DISK_DISK6 \
+#!/usr/bin/env bash
+set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -x "$HOME/.dotnet/dotnet" ]]; then
+  PATH="$HOME/.dotnet:$PATH"
+  export PATH
+fi
+if ! command -v dotnet >/dev/null 2>&1; then
+  echo "error: dotnet was not found in PATH; install the .NET SDK or add dotnet to PATH" >&2
+  exit 127
+fi
+
+ROM="${ROM:-$ROOT/roms/bootstrap_unscrambled.bin}"
+BOOT_KEYS="${BOOT_KEYS:-}"
+
+usage() {
+  echo "usage: scripts/bis --hawk IMAGE [biscvit options...]" >&2
+  echo "       scripts/bis --floppy IMAGE [biscvit options...]" >&2
+  exit 2
+}
+
+[[ $# -ge 2 ]] || usage
+mode="$1"
+image="$2"
+shift 2
+
+case "$mode" in
+  --hawk)
+    keys="${BOOT_KEYS:-H0\\r}"
+    device_args=(--hawk "$image")
+    ;;
+  --floppy)
+    keys="${BOOT_KEYS:-F0\\r}"
+    heads="${FLOPPY_HEADS:-1}"
+    device_args=(--floppy "$image" --floppy-sector-size 400 --floppy-sectors-per-track 20 --floppy-heads "$heads" --floppy-tracks 77)
+    if [[ "${FFC_LINEAR_EXPERIMENTAL:-0}" == "1" ]]; then
+      device_args+=(--ffc-linear-experimental)
+    fi
+    ;;
+  *) usage ;;
+esac
+
+exec dotnet run --project "$ROOT" -- \
+  --boot-rom "$ROM" \
+  "${device_args[@]}" \
+  --type "$keys" \
+  "$@"
