@@ -36,6 +36,8 @@ N? 5
 | `FOR v=a[,step],end; commands` | Loop; the commands are the rest of the line.  Negative steps count down |
 | `RETURN` | End a `DO` (or the program) |
 | `WRITE` | List the program in line order |
+| `LOAD file` | Load numbered source lines from a cvit text member, replacing the current program |
+| `SAVE file` | Save the current numbered program to a cvit text member, creating it if needed |
 | `ERASE` | Delete all lines |
 | `COMMENT text` | Ignore the rest of the line |
 | `QUIT` | Leave FOCAL |
@@ -47,7 +49,7 @@ used).  An error aborts the current run and returns to the `*` prompt.
 
 ## Not (yet) in this FOCAL
 Floating point, named/array variables (`X(1)`), `FSIN`/`FSQT` and other functions, `^`, `MODIFY`,
-`LIBRARY`, `TYPE $`, `%` output formatting, line-number-less `IF` forms, and saving programs.
+`LIBRARY`, `TYPE $`, `%` output formatting, and line-number-less `IF` forms.
 
 ## Implementation notes
 - Register use: `Z` = text pointer, `A`/`B` = scratch and expression results, `Y` = scratch/`MULU` operand.

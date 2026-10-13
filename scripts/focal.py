@@ -13,9 +13,9 @@ LINEBUF, INBUF, VARS = 0x7000, 0x7060, 0x70C0
 SLOTS, SLOTS_END, SLOT_SIZE = 0x8000, 0xA000, 64
 SCALARS = ["V_MAINSP", "V_RETADDR", "V_SAVEDSP", "V_KEY", "V_LINEKEY", "V_HI", "V_LO", "V_HI2",
            "V_PTR", "V_JUMP", "V_RET", "V_QUIT", "V_STOP", "V_T", "V_ACC", "V_BEST", "V_BESTP",
-           "V_MK", "V_NEWKEY", "V_CMD", "V_LEN", "V_HASDOT", "V_L1", "V_L2", "V_L3", "V_SIGN",
+           "V_MK", "V_NEWKEY", "V_CMD", "V_SUB", "V_LEN", "V_HASDOT", "V_L1", "V_L2", "V_L3", "V_SIGN",
            "V_CNT", "V_STR", "V_KEYT", "V_CH", "V_Q"]
-COMMANDS = "TSAIGDFRQCWE"
+COMMANDS = "TSAIGDFRQCWEL"
 
 
 def build_focal():
@@ -65,7 +65,7 @@ def build_focal():
 
     a.label("main_loop")
     a.lda_d("V_MAINSP").xfr("A", "S")
-    for v in ("V_JUMP", "V_RET", "V_STOP", "V_QUIT"):
+    for v in ("V_JUMP", "V_RET", "V_STOP", "V_QUIT", "V_SUB"):
         setw(v, 0)
     puts("s_prompt")
     a.lda_i("LINEBUF").xfr("A", "Y").jsr_abs("read_line")
@@ -418,10 +418,13 @@ def build_focal():
     a.label("el_cmd")
     nextch()
     a.jsr_abs("upcase").stab_d("V_CMD")
+    # Keep the second letter so SET and SAVE can coexist while commands remain
+    # first-letter abbreviated.
+    peek(); a.jsr_abs("upcase").stab_d("V_SUB")
     a.jsr_abs("skip_word_tail")
-    handlers = {"T": "h_type", "S": "h_set", "A": "h_ask", "I": "h_if", "G": "h_go", "D": "h_do",
+    handlers = {"T": "h_type", "S": "h_set_or_save", "A": "h_ask", "I": "h_if", "G": "h_go", "D": "h_do",
                 "F": "h_for", "R": "h_return", "Q": "h_quit", "C": "h_comment", "W": "h_write",
-                "E": "h_erase"}
+                "E": "h_erase", "L": "h_load"}
     for ch in COMMANDS:
         nxt = f"el_n_{ch}"
         a.ldab_d("V_CMD").cmp_al(ord(ch)).bne(nxt)
@@ -472,6 +475,8 @@ def build_focal():
     a.label("ht_expr")
     a.jsr_abs("eval_expr").jsr_abs("print_number").jmp("h_type")
 
+    a.label("h_set_or_save")
+    a.ldab_d("V_SUB").cmp_al(ord("A")).beq("h_save")
     a.label("h_set")
     a.jsr_abs("skipsp"); nextch(); a.jsr_abs("upcase").jsr_abs("var_addr")
     a.xfr("Y", "A"); push_a()
@@ -610,6 +615,14 @@ def build_focal():
     a.jsr_abs("skip_eol")
     a.xfr("S", "A").ldb_i(8).aab().xfr("B", "S")
     a.rsr()
+
+    # LOAD/SAVE use emulator-assisted cvit file services.  The service reads
+    # the complete command line from BX and transfers numbered source lines
+    # directly to/from the fixed line-slot area.
+    a.label("h_load")
+    a.lda_i("LINEBUF").xfr("A", "B").svc(0x57).jsr_abs("skip_eol").rsr()
+    a.label("h_save")
+    a.lda_i("LINEBUF").xfr("A", "B").svc(0x58).jsr_abs("skip_eol").rsr()
 
     # WRITE: list the program
     a.label("h_write")
