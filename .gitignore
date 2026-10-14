@@ -9,3 +9,5 @@ xxx
 out/
 os/
 disk/
+__pycache__/
+**/__pycache__/
