@@ -122,7 +122,7 @@ def write_ual(sec, ual_sector, data_sector, nsec):
         sec(ual_sector + k)[:] = u
 
 
-def build(system_members, help_members, label, load, entry, stride):
+def build(system_members, help_members, label, load, entry, stride, boot=True):
     img = bytearray(SECTORS * stride)
     for n in range(SECTORS):
         img[n * stride + PAYLOAD:(n + 1) * stride] = b"\xff" * (stride - PAYLOAD)
@@ -167,12 +167,14 @@ def build(system_members, help_members, label, load, entry, stride):
     write_ual(sec, HELP_UAL, HELP_DATA, help_nsec)
 
     # --- boot sector
-    member_data = {n: data for n, data, _typ in system_members}
-    k = system_pages["KERNEL"]
-    assert k % 2 == 0
-    boot = boot_sector(DATA + k // 2, -(-len(member_data["KERNEL"]) // PAYLOAD), load, entry)
-    sec(0)[:len(boot)] = boot
-    return bytes(img), DATA + k // 2
+    if boot:
+        member_data = {n: data for n, data, _typ in system_members}
+        k = system_pages["KERNEL"]
+        assert k % 2 == 0
+        boot_code = boot_sector(DATA + k // 2, -(-len(member_data["KERNEL"]) // PAYLOAD), load, entry)
+        sec(0)[:len(boot_code)] = boot_code
+        return bytes(img), DATA + k // 2
+    return bytes(img), None
 
 
 def parse_member(spec, parser):
@@ -192,17 +194,21 @@ def main():
     ap.add_argument("--entry", type=lambda x: int(x, 0))
     ap.add_argument("--stride", type=int, default=512, choices=(400, 512))
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--no-boot", action="store_true", help="format a non-boot data image; KERNEL is not required")
     a = ap.parse_args()
     system_members = [parse_member(m, ap) for m in a.member]
     help_members = [parse_member(m, ap) for m in a.help_member]
-    if "KERNEL" not in {n for n, _data, _typ in system_members}:
+    if not a.no_boot and "KERNEL" not in {n for n, _data, _typ in system_members}:
         ap.error("need --member KERNEL=file")
     out = Path(a.out)
     if out.exists() and not a.force:
         ap.error(f"{out} exists (use --force)")
-    img, ksec = build(system_members, help_members, a.label, a.load, a.entry if a.entry is not None else a.load, a.stride)
+    img, ksec = build(system_members, help_members, a.label, a.load, a.entry if a.entry is not None else a.load, a.stride, boot=not a.no_boot)
     out.write_bytes(img)
-    print(f"wrote {out}: {len(img)} bytes, stride {a.stride}; KERNEL at sector 0x{ksec:04X} -> 0x{a.load:04X}")
+    if ksec is None:
+        print(f"wrote {out}: {len(img)} bytes, stride {a.stride}; non-boot data image")
+    else:
+        print(f"wrote {out}: {len(img)} bytes, stride {a.stride}; KERNEL at sector 0x{ksec:04X} -> 0x{a.load:04X}")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 
 public static class BiscvitProgram
 {
@@ -33,6 +34,7 @@ public static class BiscvitProgram
             {
                 string a = args[i];
                 if (a == "--help" || a == "-h") { Usage(); return 0; }
+                if (a == "--oracle-server") return RunOracleServer();
                 if (a == "--load" && i + 2 < args.Length) cpu.Load(File.ReadAllBytes(args[++i]), Hex16(args[++i]));
                 else if (a == "--pc" && i + 1 < args.Length) cpu.PC = Hex16(args[++i]);
                 else if (a == "--sp" && i + 1 < args.Length) cpu.SetRegPair(Cpu6.SP, Hex16(args[++i]));
@@ -73,7 +75,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--watch lo hi] [--ram-kb n] [--dump addr len] [--max n]");
+        Console.WriteLine("usage: biscvit [--oracle-server] [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--watch lo hi] [--ram-kb n] [--dump addr len] [--max n]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
         Console.WriteLine("TUI keys: terminal focus is normally console; F12 toggles MUX1 focus/overlay; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
@@ -94,6 +96,40 @@ public static class BiscvitProgram
             }
             cpu.QueueTerminalInput((byte)ch);
         }
+    }
+
+    static int RunOracleServer()
+    {
+        string line;
+        while ((line = Console.In.ReadLine()) != null)
+        {
+            if (String.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var req = doc.RootElement;
+                object resp;
+                if (!req.TryGetProperty("op", out var op) || op.GetString() != "step")
+                    resp = new Dictionary<string, object> { ["ok"] = false, ["error"] = "only op=step is supported" };
+                else
+                {
+                    var cpu = new Cpu6();
+                    byte[] before = cpu.RestoreOracleState(req.TryGetProperty("state", out var st) ? st : default);
+                    string error = null;
+                    byte instr = cpu.OracleOpcode(before);
+                    try { cpu.Step(); }
+                    catch (Exception ex) { error = ex.Message; }
+                    resp = cpu.OracleResponse(before, error, instr);
+                }
+                Console.WriteLine(JsonSerializer.Serialize(resp));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object> { ["ok"] = false, ["error"] = ex.Message }));
+            }
+            Console.Out.Flush();
+        }
+        return 0;
     }
 
     public static ushort Hex16(string s)
@@ -1272,6 +1308,80 @@ public sealed class Cpu6
     {
         if (address + bytes.Length > 65536) throw new ArgumentException("load does not fit memory");
         for (int i = 0; i < bytes.Length; i++) { int pa = address + i; mem[pa >= 0xF000 ? 0x30000 | pa : pa] = bytes[i]; }
+    }
+
+    public byte[] RestoreOracleState(JsonElement state)
+    {
+        Array.Clear(mem, 0, mem.Length);
+        byte[] initPt = InitPageTable(); Array.Copy(initPt, pageTable, initPt.Length);
+        terminalInput.Clear(); mux1Input.Clear(); interruptStack.Clear();
+        flags = 0; ipl = 0; op = 0; mmuMap = 0; MemStatus = 0; Halted = false;
+        clockEnabled = false; clockTick = false; clockCycles = 0;
+        dmaAddr = dmaCount = 0; dmaMode = 0; muxInterruptEnabled = false;
+        PC = 0;
+        RamBytes = Math.Max(RamBytes, 0x10000);
+        if (state.ValueKind == JsonValueKind.Undefined || state.ValueKind == JsonValueKind.Null) return (byte[])mem.Clone();
+        if (state.TryGetProperty("pc", out var pcv)) PC = (ushort)OracleNum(pcv);
+        if (state.TryGetProperty("ipl", out var iv)) ipl = (byte)(OracleNum(iv) & 15);
+        if (state.TryGetProperty("flags", out var fv)) flags = (byte)(OracleNum(fv) & 15);
+        if (state.TryGetProperty("regs", out var regs) && regs.ValueKind == JsonValueKind.Array)
+        {
+            int r = 0;
+            foreach (var v in regs.EnumerateArray()) { if (r >= 8) break; SetRegPair(r++, (ushort)OracleNum(v)); }
+        }
+        if (state.TryGetProperty("memory", out var memory) && memory.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in memory.EnumerateArray())
+            {
+                int a = item.TryGetProperty("address", out var av) ? OracleNum(av) & 0xffff : 0;
+                if (!item.TryGetProperty("bytes", out var bv)) continue;
+                byte[] bytes = OracleBytes(bv);
+                for (int i = 0; i < bytes.Length; i++) mem[Phys((ushort)(a + i))] = bytes[i];
+            }
+        }
+        return (byte[])mem.Clone();
+    }
+
+    public byte OracleOpcode(byte[] before) => before[Phys(PC)];
+
+    public Dictionary<string, object> OracleResponse(byte[] before, string error, byte instr)
+    {
+        var regs = new List<string>();
+        for (int r = 0; r < 8; r++) regs.Add(RegPair(r).ToString("X4", CultureInfo.InvariantCulture));
+        var writes = new List<Dictionary<string, object>>();
+        for (int a = 0x100; a < 0x10000; a++)
+        {
+            int p = Phys((ushort)a);
+            if (before[p] != mem[p]) writes.Add(new Dictionary<string, object> { ["address"] = a, ["old"] = before[p], ["new"] = mem[p] });
+        }
+        var outp = new Dictionary<string, object>
+        {
+            ["ok"] = error == null,
+            ["backend"] = "implementation",
+            ["source"] = "biscvit Cpu6.Step",
+            ["instruction"] = instr.ToString("X2", CultureInfo.InvariantCulture),
+            ["state"] = new Dictionary<string, object> { ["pc"] = PC, ["ipl"] = ipl, ["flags"] = flags, ["regs"] = regs, ["writes"] = writes, ["halted"] = Halted }
+        };
+        if (error != null) outp["error"] = error;
+        return outp;
+    }
+
+    static int OracleNum(JsonElement v)
+    {
+        if (v.ValueKind == JsonValueKind.Number) return v.GetInt32();
+        if (v.ValueKind == JsonValueKind.String)
+        {
+            string s = v.GetString() ?? "0";
+            s = s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s.Substring(2) : s;
+            return Int32.Parse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+        }
+        return 0;
+    }
+    static byte[] OracleBytes(JsonElement v)
+    {
+        if (v.ValueKind == JsonValueKind.Array) return v.EnumerateArray().Select(x => (byte)OracleNum(x)).ToArray();
+        string s = (v.GetString() ?? "").Replace(" ", "").Replace("\t", "");
+        return s.Length == 0 ? Array.Empty<byte>() : Convert.FromHexString(s);
     }
     public void MountFloppy(string path)
     {
@@ -2781,7 +2891,7 @@ public sealed class Cpu6
         int f = raw > 0xFF ? (I | C) : 0;
         if (((lhs & 0x7F) + (transformed & 0x7F) + (subtract ? 1 : 0)) > 0x7F) f ^= I;
         if (v == 0) f |= Z; if ((v & 0x80) != 0) f |= N;
-        flags = (byte)((flags & 0x0F) | f);
+        flags = (byte)f;
     }
     void Arith16(int lhs, int rhs, bool subtract)
     {
@@ -2791,7 +2901,7 @@ public sealed class Cpu6
         int f = raw > 0xFFFF ? (I | C) : 0;
         if (((lhs & 0x7FFF) + (transformed & 0x7FFF) + (subtract ? 1 : 0)) > 0x7FFF) f ^= I;
         if (v == 0) f |= Z; if ((v & 0x8000) != 0) f |= N;
-        flags = (byte)((flags & 0x0F) | f);
+        flags = (byte)f;
     }
     void Inc8(int r) { int old = Reg(r); Reg(r, old + 1); Arith8(old, 1, false); }
     void Dec8(int r) { int old = Reg(r); Reg(r, old - 1); Arith8(old, 1, true); }

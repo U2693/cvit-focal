@@ -20,8 +20,12 @@ Common boot scripts:
 biscvit ships with **cvit**, a small ProDOS-inspired OS for the Hawk disk:
 
 ```sh
-python3 scripts/mk_test_os.py      # builds out/os.img
-scripts/bis --hawk out/os.img      # boots to the ] prompt; try CAT, TYPE WELCOME, HELP
+python3 scripts/mk_test_os.py       # builds out/os.img
+python3 scripts/mk_data_img.py      # builds formatted scratch/work platter out/data.img
+scripts/bis --hawk out/os.img       # boots to the ] prompt; try CAT, TYPE WELCOME, HELP
+scripts/bis --hawk out/os.img --hawk1 out/data.img  # H1: scratch/self-hosting platter
+scripts/hawk_export_tmp.py out/data.img              # export to a Windows-friendly temp dir
+scripts/hawk_to_iso.sh out/data.img out/data.iso      # build a Windows-mountable ISO using nix/xorriso
 ```
 
 See `docs/cvit.md` for the cvit spec. Other notes: `docs/assembler.md`, `docs/focal.md`,
