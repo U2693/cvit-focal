@@ -78,21 +78,35 @@ def write_u16(img: bytearray, off: int, v: int):
     img[off + 1] = v & 0xFF
 
 
-def dir_entries(img: bytearray, stride: int, data_sector: int):
+def directory_length(img: bytearray, stride: int, data_sector: int) -> int:
     base = sec_off(stride, data_sector)
-    for row in range(DIR_FIRST, PAGE, ROW):
-        off = base + row
-        if img[off] == 0x84 and img[off + 1] == 0x8D:
+    if img[base + 10:base + 12] != b"DX":
+        return PAGE
+    sectors = u16(img, base + 12)
+    limit = HELP_DATA - SYSTEM_DATA if data_sector == SYSTEM_DATA else 0x32C0 - data_sector
+    if not 0 < sectors <= limit:
+        raise ValueError("invalid directory size")
+    return sectors * PAYLOAD
+
+
+def directory_offset(stride: int, data_sector: int, row: int) -> int:
+    return sec_off(stride, data_sector + row // PAYLOAD) + row % PAYLOAD
+
+
+def dir_entries(img: bytearray, stride: int, data_sector: int):
+    for row in range(DIR_FIRST, directory_length(img, stride, data_sector), ROW):
+        off = directory_offset(stride, data_sector, row)
+        if img[off:off + 2] == b"\x84\x8d":
             return
         yield off, decode_name(img[off:off + NAME_LEN]), img[off + 10] + max(0, img[off + 12] - 0x08) * 128, img[off + 13]
 
 
-def find_terminator(img: bytearray, stride: int, data_sector: int) -> int:
-    base = sec_off(stride, data_sector)
-    for row in range(DIR_FIRST, PAGE, ROW):
-        off = base + row
-        if img[off] == 0x84 and img[off + 1] == 0x8D:
-            return off
+def find_terminator(img: bytearray, stride: int, data_sector: int):
+    length = directory_length(img, stride, data_sector)
+    for row in range(DIR_FIRST, length - ROW - 1, ROW):
+        off = directory_offset(stride, data_sector, row)
+        if img[off:off + 2] == b"\x84\x8d":
+            return off, directory_offset(stride, data_sector, row + ROW)
     raise ValueError("library directory has no room/terminator")
 
 
@@ -161,21 +175,22 @@ def put_text(image_path: Path, target: str, source_path: Path):
         old_nsec = u16(img, ual) + 1
         need_nsec = alloc_sectors(len(data))
         page = old_nsec * 2
-        term = find_terminator(img, stride, data_sector)
-        if term + ROW + 1 >= sec_off(stride, data_sector) + PAGE:
-            raise ValueError("library directory is full")
+        if data_sector == SYSTEM_DATA and data_sector + old_nsec + need_nsec > HELP_DATA:
+            raise ValueError("SYSTEM library would overlap HELP")
+        term, next_row = find_terminator(img, stride, data_sector)
         write_row(img, term, name, page, TXT)
-        img[term + ROW] = 0x84
-        img[term + ROW + 1] = 0x8D
+        img[next_row:next_row + 2] = b"\x84\x8d"
         write_u16(img, ual, old_nsec + need_nsec - 1)
         for i in range(need_nsec):
             append_ual_sector(img, stride, ual_sector, data_sector + old_nsec + i)
 
     cap = member_capacity(img, stride, data_sector, ual_sector, page)
     start_sector = data_sector + page // 2
-    start = sec_off(stride, start_sector) + (page & 1) * PAGE
-    img[start:start + cap] = b" " * cap
-    img[start:start + len(data)] = data
+    padded = data.ljust(cap, b" ")
+    for pos in range(0, cap, PAYLOAD):
+        start = sec_off(stride, start_sector + pos // PAYLOAD)
+        chunk = padded[pos:pos + PAYLOAD]
+        img[start:start + len(chunk)] = chunk
     image_path.write_bytes(img)
     print(f"wrote {image_path}:{prefix}/{name} ({len(data)} bytes, capacity {cap})")
 

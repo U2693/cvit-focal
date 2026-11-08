@@ -151,7 +151,7 @@ type       byte    ; SYS/BIN/TXT/BAS/DIR equivalent
 1. Boot banner, stable jump table, ProDOS-style prompt. **Done.**
 2. Console `putc`/`puts`/`getc` routines.
 3. Hawk `read_block`/`write_block` wrappers over native 400-byte sectors. **Started:** `CAT` reads sector `0x20` directly.
-4. Read `SYSTEM` library and list members with `CAT`. **Started:** current stub reads page 0 and prints rows until the `84 8D` terminator.
+4. Read `SYSTEM` library and list members with `CAT`. **Started:** host-assisted catalog reads rows until the `84 8D` terminator, including extended directories on newly built images (see `hawk-layout.md`).
 5. `TYPE name` demo: a text member is read from Hawk and displayed on the console. **Done for existing SYSTEM members such as `WELCOME`, `TEST`, and `ZEP`.**
 6. Load and run `SYSTEM/COMMAND`. **Done:** KERNEL loads COMMAND at `0x3000` and jumps to it.
 7. Interactive COMMAND loop. **Started:** supports `PREFIX [device:/path]`, `CAT`/`CATALOG [prefix]` (including `H0:`/`H1:`), `TYPE WELCOME`, `RUN NAME` for flat `$0100` SYS members, `HELP`, `PANEL` for a CPU6 front-panel view of run state, PC, flags, IPL, and registers, native `.STA`, `.DEBUG`, `.CED`, `.KEYS`, and `QUIT`.

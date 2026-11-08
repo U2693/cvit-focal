@@ -186,7 +186,9 @@ def text_to_crlf(data: bytes) -> bytes:
 def export_library(lib_name: str, lib_data: bytes, out_root: Path):
     out_dir = out_root / safe_name(lib_name)
     out_dir.mkdir(parents=True, exist_ok=True)
-    entries = list(parse_rows(lib_data, limit=PAGE))
+    dir_len = (int.from_bytes(lib_data[12:14], "big") * 400
+               if lib_data[10:12] == b"DX" else PAGE)
+    entries = list(parse_rows(lib_data, limit=min(dir_len, len(lib_data))))
     pages = sorted((e["page"], e) for e in entries)
     for i, (page, ent) in enumerate(pages):
         next_page = pages[i + 1][0] if i + 1 < len(pages) else len(lib_data) // PAGE

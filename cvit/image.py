@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from cvit.constants import PAGE
+from mkhawk import directory_sectors
 
 
 def alloc_pages(data_len):
@@ -43,7 +44,7 @@ def collect_library_members(library_root, generated=None, priority=None, last=No
 
 
 def member_pages(members):
-    pages, start = {}, 2
+    pages, start = {}, directory_sectors(len(members)) * 2
     for n, _p, data in members:
         pages[n] = start
         start += alloc_pages(len(data))

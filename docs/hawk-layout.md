@@ -32,11 +32,21 @@ original `@SFAL0` format is not decoded).
 A library is a catalog file whose data starts with a blank name, then 16-byte
 member rows from offset 16 (`84 8D` ends): `name[10]`, byte 10 = start page % 128,
 byte 12 = `0x08 + start page // 128`, byte 13 = attr (`14`).  Pages are 200 bytes.
+
+New biscvit images use a **biscvit extension**, not a verified Disk6 format:
+header bytes 10–11 contain ASCII `DX` and bytes 12–13 contain the big-endian
+count of reserved 400-byte directory sectors. Rows are contiguous in logical
+sector data, including across sector boundaries; the terminator follows the
+last row. At least four sectors are reserved (98 member rows), or more if the
+build requires them. Creating files uses the reserved space; it does not grow
+an existing directory. Images without the marker retain the old one-page limit.
+Other Disk6 tools may not recognize this extension; interoperability has not
+been verified.
+
 mkhawk starts every member on a sector boundary (even page), so member N is at
 sector `0x20 + page/2`.  `basic.system` is `SYSTEM/BASIC`, `command.system` is
 `SYSTEM/COMMAND`; the kernel is `SYSTEM/KERNEL`.  Member names are max 10 chars.
-The current test KERNEL loads `SYSTEM/COMMAND` at `0x3000`; COMMAND reads the
-SYSTEM directory sector for `CAT` and the WELCOME data sector for `TYPE WELCOME`.
+The current test KERNEL loads `SYSTEM/COMMAND` at `0x3000`; COMMAND uses host-assisted CVIT services for `CAT` and `TYPE`.
 
 ## Boot sector
 Parameters at `0x0105`: start sector, sector count, load address, entry address

@@ -20,6 +20,11 @@ CONTROL, VOLUME, UAL, DATA = 0x0E, 0x10, 0x12, 0x20
 UAL_SECTORS = 6
 HELP_UAL, HELP_DATA = 0x18, 0x100
 PAGE = 200
+MIN_DIRECTORY_SECTORS = 4
+
+
+def directory_sectors(member_count):
+    return max(MIN_DIRECTORY_SECTORS, (32 + member_count * 16 + PAYLOAD - 1) // PAYLOAD)
 
 
 def hi(s, width=10):
@@ -74,13 +79,15 @@ def member_type(name, path):
 def build_library(members):
     names = [n for n, _data, _typ in members]
     assert len(names) == len(set(names)), "duplicate member"
-    assert len(members) * 16 + 32 <= PAGE, "too many members for one directory page"
-    pages, start = {}, 2
+    dir_sectors = directory_sectors(len(members))
+    assert dir_sectors <= 0xFFFF, "directory too large"
+    pages, start = {}, dir_sectors * 2
     for n, data, _typ in members:
         pages[n] = start
         start += max(2, (-(-len(data) // PAGE) + 1) & ~1)   # whole sectors; even empty files get one sector
     lib = bytearray(start * PAGE)
     lib[0:10] = hi("")
+    lib[10:14] = b"DX" + dir_sectors.to_bytes(2, "big")
     for i, (n, data, typ) in enumerate(members):
         row = lib[16 + i * 16:32 + i * 16]
         row[0:10] = hi(n)
@@ -130,7 +137,7 @@ def build(system_members, help_members, label, load, entry, stride, boot=True):
     def sec(n):
         return memoryview(img)[n * stride:n * stride + PAYLOAD]
 
-    # --- libraries: page 0 = directory, members on sector boundaries
+    # --- libraries: reserved directory sectors, members on sector boundaries
     system_lib, system_pages = build_library(system_members)
     system_nsec = len(system_lib) // PAYLOAD
     assert DATA + system_nsec <= HELP_DATA, "SYSTEM library overlaps HELP library"

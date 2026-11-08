@@ -809,9 +809,15 @@ public sealed class CvitFileSystem
         if (!TryLibrary(prefix, out int dataSector, out _)) { error = "?NO LIBRARY"; return false; }
         byte[] data = Encoding.ASCII.GetBytes(text);
         if (data.Length > capacity) { error = "?TOO BIG"; return false; }
-        int offset = MemberOffset(dataSector, page);
-        Array.Fill<byte>(image, 0x20, offset, capacity);
-        Buffer.BlockCopy(data, 0, image, offset, data.Length);
+        for (int pos = 0; pos < capacity; pos += PageSize)
+        {
+            int offset = MemberOffset(dataSector, page + pos / PageSize);
+            int count = Math.Min(PageSize, capacity - pos);
+            if (!RangeOk(offset, count)) { error = "?TOO BIG"; return false; }
+            Array.Fill<byte>(image, 0x20, offset, count);
+            int copy = Math.Min(count, Math.Max(0, data.Length - pos));
+            if (copy > 0) Buffer.BlockCopy(data, pos, image, offset, copy);
+        }
         save();
         return true;
     }
@@ -825,24 +831,29 @@ public sealed class CvitFileSystem
         if (TryFindMember(prefix, name, out _, out _)) return true;
         int dir = imageOffsetForSector(dataSector);
         if (!RangeOk(dir, sectorSize)) return false;
+        int dirBytes = LibraryDirectoryBytes(dataSector);
         int term = -1;
-        for (int row = DirectoryFirstRow; row < DirectoryPageBytes; row += DirectoryRowSize)
+        for (int row = DirectoryFirstRow; row + DirectoryRowSize + 1 < dirBytes; row += DirectoryRowSize)
         {
-            if (image[dir + row] == 0x84 && image[dir + row + 1] == 0x8D) { term = row; break; }
+            int off = DirectoryOffset(dataSector, row);
+            if (!RangeOk(off, DirectoryRowSize)) return false;
+            if (image[off] == 0x84 && image[off + 1] == 0x8D) { term = row; break; }
         }
-        if (term < 0 || term + DirectoryRowSize + 1 >= DirectoryPageBytes) return false;
+        if (term < 0) return false;
 
         int ual = imageOffsetForSector(ualSector);
         if (!RangeOk(ual, sectorSize)) return false;
         int nsec = ((image[ual] << 8) | image[ual + 1]) + 1;
         int newSector = dataSector + nsec;
+        if (dataSector == SystemDataSector && newSector >= HelpDataSector) return false;
         int newPage = nsec * 2;
         int newOff = imageOffsetForSector(newSector);
         if (!RangeOk(newOff, sectorSize)) return false;
 
-        WriteDirectoryRow(dir + term, name, newPage, TypeCode(type));
-        image[dir + term + DirectoryRowSize] = 0x84;
-        image[dir + term + DirectoryRowSize + 1] = 0x8D;
+        WriteDirectoryRow(DirectoryOffset(dataSector, term), name, newPage, TypeCode(type));
+        int nextRow = DirectoryOffset(dataSector, term + DirectoryRowSize);
+        image[nextRow] = 0x84;
+        image[nextRow + 1] = 0x8D;
 
         Array.Fill<byte>(image, 0x20, newOff, sectorSize);
         image[ual] = (byte)(nsec >> 8);
@@ -860,7 +871,7 @@ public sealed class CvitFileSystem
         int dir = imageOffsetForSector(dataSector);
         if (!RangeOk(dir, sectorSize)) return Array.Empty<(string, string)>();
         var entries = new List<(string Name, string Type)>();
-        foreach (var entry in DirectoryEntries(dir)) entries.Add((entry.Name, TypeName(entry.Type)));
+        foreach (var entry in LibraryDirectoryEntries(dataSector)) entries.Add((entry.Name, TypeName(entry.Type)));
         return entries;
     }
 
@@ -889,12 +900,12 @@ public sealed class CvitFileSystem
         if (!RangeOk(dir, sectorSize) || !RangeOk(ual, sectorSize)) return false;
         int libraryPages = (((image[ual] << 8) | image[ual + 1]) + 1) * 2;
         int found = -1, next = libraryPages;
-        foreach (var entry in DirectoryEntries(dir))
+        foreach (var entry in LibraryDirectoryEntries(dataSector))
         {
             if (String.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase)) found = entry.Page;
         }
         if (found < 0) return false;
-        foreach (var entry in DirectoryEntries(dir))
+        foreach (var entry in LibraryDirectoryEntries(dataSector))
             if (entry.Page > found && entry.Page < next) next = entry.Page;
         page = found;
         capacity = (next - found) * PageSize;
@@ -927,6 +938,30 @@ public sealed class CvitFileSystem
     }
     int MemberOffset(int dataSector, int page) => imageOffsetForSector(dataSector + page / 2) + (page & 1) * PageSize;
     bool RangeOk(int offset, int count) => offset >= 0 && offset + count <= image.Length;
+
+    int DirectoryOffset(int dataSector, int row) => imageOffsetForSector(dataSector + row / sectorSize) + row % sectorSize;
+
+    int LibraryDirectoryBytes(int dataSector)
+    {
+        int dir = imageOffsetForSector(dataSector);
+        if (!RangeOk(dir, sectorSize)) return 0;
+        if (image[dir + 10] != (byte)'D' || image[dir + 11] != (byte)'X') return DirectoryPageBytes;
+        int sectors = (image[dir + 12] << 8) | image[dir + 13];
+        int limit = dataSector == SystemDataSector ? HelpDataSector - SystemDataSector : 0x32C0 - dataSector;
+        return sectors > 0 && sectors <= limit ? sectors * sectorSize : 0;
+    }
+
+    IEnumerable<(string Name, int Page, byte Type)> LibraryDirectoryEntries(int dataSector)
+    {
+        int length = LibraryDirectoryBytes(dataSector);
+        for (int row = DirectoryFirstRow; row + DirectoryRowSize <= length; row += DirectoryRowSize)
+        {
+            int off = DirectoryOffset(dataSector, row);
+            if (!RangeOk(off, DirectoryRowSize)) yield break;
+            if (image[off] == 0x84 && image[off + 1] == 0x8D) yield break;
+            yield return (DecodeMemberName(off), image[off + 10] + Math.Max(0, image[off + 12] - 0x08) * 128, image[off + 13]);
+        }
+    }
 
     IEnumerable<(string Name, int Page, byte Type)> DirectoryEntries(int dir)
     {
