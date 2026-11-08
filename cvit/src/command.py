@@ -28,7 +28,7 @@ def build_command(welcome_sector):
     cmp_al('C', "cmd_cat"); cmp_al('c', "cmd_cat")
     cmp_al('T', "cmd_type"); cmp_al('t', "cmd_type")
     cmp_al('H', "cmd_help"); cmp_al('h', "cmd_help")
-    cmp_al('P', "cmd_prefix"); cmp_al('p', "cmd_prefix")
+    cmp_al('P', "cmd_panel"); cmp_al('p', "cmd_panel")
     cmp_al('R', "cmd_run"); cmp_al('r', "cmd_run")
     cmp_al('Q', "cmd_quit"); cmp_al('q', "cmd_quit")
     cmp_al('.', "cmd_dot")
@@ -48,7 +48,7 @@ def build_command(welcome_sector):
 
     a.label("cmd_help")
     a.jsr_abs("drain_line")
-    a.print("COMMANDS: CAT, TYPE WELCOME, RUN FOCAL, RUN NAME, PREFIX, HELP, .STA, .DEBUG, .CED, QUIT\r\n")
+    a.print("COMMANDS: CAT, TYPE WELCOME, RUN FOCAL, RUN NAME, PREFIX, PANEL, HELP, .STA, .DEBUG, .CED, QUIT\r\n")
     a.jmp_abs("prompt")
 
     a.label("cmd_sta")
@@ -130,6 +130,11 @@ def build_command(welcome_sector):
 
     a.label("cmd_type")
     a.jsr_abs("type_line")
+    a.jmp_abs("prompt")
+
+    a.label("cmd_panel")
+    a.jsr_abs("drain_line")
+    a.svc(0x57)
     a.jmp_abs("prompt")
 
     a.label("cmd_prefix")

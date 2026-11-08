@@ -1731,6 +1731,7 @@ public sealed class Cpu6
         if (svc == 0x54) { StartKeyTrace(); return; }
         if (svc == 0x55) { PrefixCommand(); return; }
         if (svc == 0x56) { RunSystemMember(); return; }
+        if (svc == 0x57) { PrintCvitPanel(); return; }
         // Real SVC/JSYS (CenturionJS op_JSYS, wiki "JSYS"): push page-table map, IPL, X, then the argument; X <- PC;
         // select map 0 and enter the system call handler at 0x0100.  RSV (0x0F) undoes it.
         PushB((byte)mmuMap); PushB(ipl); Push(RegPair(RT)); SetRegPair(RT, PC); PushB(svc);
@@ -2024,6 +2025,19 @@ public sealed class Cpu6
         currentCvitDevice = dev;
         currentCvitPrefix = s;
         DebugOut($"\r\nPREFIX H{currentCvitDevice}:{currentCvitPrefix}\r\n");
+    }
+    void PrintCvitPanel()
+    {
+        DebugOut("\r\n+------------------------------------------+\r\n");
+        DebugOut("|       CENTURION CPU6  -  FRONT PANEL     |\r\n");
+        DebugOut("+------------------------------------------+\r\n");
+        DebugOut($"| POWER  ON       RUN {(Halted ? "HALT" : "ON  ")}       IPL {ipl:X1}              |\r\n");
+        DebugOut($"| PC     {PC:X4}      FLAGS [{FlagString()}]                       |\r\n");
+        DebugOut($"| AX     {RegPair(AX):X4}      BX     {RegPair(BX):X4}                |\r\n");
+        DebugOut($"| RT     {RegPair(RT):X4}      DX     {RegPair(DX):X4}                |\r\n");
+        DebugOut($"| EX     {RegPair(EX):X4}      SP     {RegPair(SP):X4}                |\r\n");
+        DebugOut($"| GX     {RegPair(GX):X4}      HX     {RegPair(HX):X4}                |\r\n");
+        DebugOut("+------------------------------------------+\r\n");
     }
     void PrintCvitStatus()
     {

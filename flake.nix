@@ -52,8 +52,8 @@
         in
         {
           default = pkgs.mkShell {
-            packages = [ pkgs.dotnetCorePackages.sdk_8_0 ];
-            DOTNET_ROOT = "${pkgs.dotnetCorePackages.sdk_8_0}";
+            packages = [ pkgs.dotnetCorePackages.sdk_8_0 pkgs.dotnetCorePackages.runtime_8_0 ];
+            DOTNET_ROOT = "${pkgs.dotnetCorePackages.runtime_8_0}";
           };
         });
     };
