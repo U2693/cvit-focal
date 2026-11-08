@@ -134,7 +134,7 @@ def build_command(welcome_sector):
 
     a.label("cmd_panel")
     a.jsr_abs("drain_line")
-    a.svc(0x57)
+    a.svc(0x59)
     a.jmp_abs("prompt")
 
     a.label("cmd_prefix")

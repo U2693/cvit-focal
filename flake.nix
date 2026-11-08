@@ -25,8 +25,8 @@
             projectFile = "biscvit.csproj";
             nugetDeps = [ ];
 
-            dotnet-sdk = dotnet.sdk_8_0;
-            dotnet-runtime = dotnet.runtime_8_0;
+            dotnet-sdk = dotnet.sdk_9_0;
+            dotnet-runtime = dotnet.runtime_9_0;
 
             executables = [ "biscvit" ];
             doCheck = false;
@@ -52,8 +52,8 @@
         in
         {
           default = pkgs.mkShell {
-            packages = [ pkgs.dotnetCorePackages.sdk_8_0 pkgs.dotnetCorePackages.runtime_8_0 ];
-            DOTNET_ROOT = "${pkgs.dotnetCorePackages.runtime_8_0}";
+            packages = [ pkgs.dotnetCorePackages.sdk_9_0 ];
+            DOTNET_ROOT = "${pkgs.dotnetCorePackages.sdk_9_0}";
           };
         });
     };

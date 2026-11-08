@@ -1731,12 +1731,84 @@ public sealed class Cpu6
         if (svc == 0x54) { StartKeyTrace(); return; }
         if (svc == 0x55) { PrefixCommand(); return; }
         if (svc == 0x56) { RunSystemMember(); return; }
-        if (svc == 0x57) { PrintCvitPanel(); return; }
+        if (svc == 0x57) { FocalLoad(); return; }
+        if (svc == 0x58) { FocalSave(); return; }
+        if (svc == 0x59) { PrintCvitPanel(); return; }
         // Real SVC/JSYS (CenturionJS op_JSYS, wiki "JSYS"): push page-table map, IPL, X, then the argument; X <- PC;
         // select map 0 and enter the system call handler at 0x0100.  RSV (0x0F) undoes it.
         PushB((byte)mmuMap); PushB(ipl); Push(RegPair(RT)); SetRegPair(RT, PC); PushB(svc);
         mmuMap = 0; jsysDepth++;
         PC = 0x0100;
+    }
+    string ReadCvitMemoryString(ushort p, int max = 256)
+    {
+        var s = new StringBuilder();
+        for (int i = 0; i < max; i++)
+        {
+            byte ch = Read8((ushort)(p + i));
+            if (ch == 0 || ch == 0x0D || ch == 0x0A) break;
+            s.Append((char)(ch & 0x7F));
+        }
+        return s.ToString();
+    }
+    void FocalFileError(string message) => DebugOut("\r\n" + message + "\r\n");
+    void FocalLoad()
+    {
+        var parsed = ParseCvitPath(ReadCvitMemoryString(RegPair(BX)), "", "LOAD", "OAD");
+        if (String.IsNullOrEmpty(parsed.Member)) { FocalFileError("?LOAD WHAT"); return; }
+        CvitFileSystem fs = CvitFsForDevice(parsed.Device);
+        if (fs == null || !fs.TryReadTextMember(parsed.Prefix, parsed.Member, out string text)) { FocalFileError("?NO FILE"); return; }
+        if (!IsKnownLibraryPrefix(parsed.Prefix)) { FocalFileError("?NO LIBRARY"); return; }
+        // Clear the resident program and install the conventional numbered source.
+        for (ushort p = 0x8000; p < 0xA000; p += 64) Write8(p, 0);
+        int count = 0;
+        foreach (string raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            string line = raw.TrimEnd();
+            if (line.Length == 0) continue;
+            int dot = line.IndexOf('.');
+            if (dot <= 0 || !Int32.TryParse(line.Substring(0, dot), out int group)) continue;
+            int end = dot + 1;
+            while (end < line.Length && Char.IsDigit(line[end])) end++;
+            if (!Int32.TryParse(line.Substring(dot + 1, end - dot - 1), out int sub)) continue;
+            if (sub < 0 || sub > 99) continue;
+            int key = group * 100 + (sub == 0 ? 0 : (sub < 10 ? sub * 10 : sub));
+            if (key <= 0 || key >= 10000 || count >= 128) continue;
+            string body = end < line.Length ? line.Substring(end).TrimStart() : "";
+            if (body.Length > 61) body = body.Substring(0, 61);
+            ushort slot = (ushort)(0x8000 + count * 64);
+            Write8(slot, (byte)(key >> 8)); Write8((ushort)(slot + 1), (byte)key);
+            for (int i = 0; i < body.Length; i++) Write8((ushort)(slot + 2 + i), (byte)body[i]);
+            Write8((ushort)(slot + 2 + body.Length), 0x0D);
+            count++;
+        }
+        DebugOut($"\r\nLoaded {parsed.Display}\r\n");
+    }
+    void FocalSave()
+    {
+        var parsed = ParseCvitPath(ReadCvitMemoryString(RegPair(BX)), "", "SAVE", "AVE");
+        if (String.IsNullOrEmpty(parsed.Member)) { FocalFileError("?SAVE WHAT"); return; }
+        CvitFileSystem fs = CvitFsForDevice(parsed.Device);
+        if (fs == null || !IsKnownLibraryPrefix(parsed.Prefix)) { FocalFileError("?NO LIBRARY"); return; }
+        var lines = new List<(int Key, string Body)>();
+        for (ushort slot = 0x8000; slot < 0xA000; slot += 64)
+        {
+            int key = (Read8(slot) << 8) | Read8((ushort)(slot + 1));
+            if (key == 0) continue;
+            var body = new StringBuilder();
+            for (int i = 2; i < 64; i++)
+            {
+                byte ch = Read8((ushort)(slot + i));
+                if (ch == 0 || ch == 0x0D) break;
+                body.Append((char)(ch & 0x7F));
+            }
+            lines.Add((key, body.ToString()));
+        }
+        var text = new StringBuilder();
+        foreach (var line in lines.OrderBy(x => x.Key))
+            text.Append(line.Key / 100).Append('.').Append((line.Key % 100).ToString("00")).Append(' ').Append(line.Body).Append("\r\n");
+        if (!fs.WriteTextMember(parsed.Prefix, parsed.Member, text.ToString(), true, out string error)) { FocalFileError(error); return; }
+        DebugOut($"\r\nSaved {parsed.Display}\r\n");
     }
     void CvitConsoleSvc()
     {
