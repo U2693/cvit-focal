@@ -19,10 +19,24 @@ def focal(*lines):
 
 @unittest.skipUnless(shutil.which("dotnet") and (ROOT / "out/os.img").exists(), "needs dotnet and out/os.img")
 class FocalTests(unittest.TestCase):
+    def test_shared_session_transcript(self):
+        session = (ROOT / "testdata/focal-common.session").read_text().splitlines()
+        self.assertEqual(session[-1], "QUIT")
+        out = focal(*session[:-1])
+        transcript = out[out.index("*T 2+3*4"):out.index("\n]Q")].strip()
+        expected = (ROOT / "testdata/focal-common.expected").read_text().strip()
+        self.assertEqual(transcript, expected)
+
     def test_arithmetic(self):
         out = focal("T 2+3*4,!", "T (2+3)*4,!", "T -5/2,!", "T 7-10,!", "T 100/7,\"r\",100-7*14,!")
         for want in ("\n14\n", "\n20\n", "\n-2\n", "\n-3\n", "\n14r2\n"):
             self.assertIn(want, out)
+
+    def test_integer_powers(self):
+        out = focal("T 2^10,!,2^3^2,!,-2^2,!,(-2)^3,!", "T 2^-1", "T 7,!")
+        for value in ("1024", "512", "-4", "-8", "7"):
+            self.assertIn("\n" + value + "\n", out)
+        self.assertIn("?SYNTAX", out)
 
     def test_variables_and_multiple_statements(self):
         self.assertIn("\n49\n", focal("S A=7;T A*A,!"))
@@ -34,6 +48,16 @@ class FocalTests(unittest.TestCase):
     def test_write_lists_sorted_and_normalised(self):
         out = focal("2.1 T 2", "1.1 T 1", "W")
         self.assertRegex(out, r"1\.10 T 1\n2\.10 T 2\n")
+
+    def test_write_group_and_line(self):
+        out = focal("1.1 T 11", "1.2 T 12", "2.1 T 21", "W 1", "W 2.1")
+        group = out.split("*W 1\n", 1)[1].split("*W 2.1\n", 1)[0]
+        line = out.split("*W 2.1\n", 1)[1]
+        self.assertIn("1.10 T 11", group)
+        self.assertIn("1.20 T 12", group)
+        self.assertNotIn("2.10", group)
+        self.assertIn("2.10 T 21", line)
+        self.assertNotIn("1.10", line)
 
     def test_for_step_and_negative_step(self):
         out = focal("FOR I=1,5; T I*I,\" \"", "FOR J=10,-3,1;T J,\" \"")

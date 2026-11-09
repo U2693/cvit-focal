@@ -35,7 +35,7 @@ N? 5
 | `DO n` | Call line `n.SS`, or every line of group `n` (`DO 2`); `RETURN` ends the call |
 | `FOR v=a[,step],end; commands` | Loop; the commands are the rest of the line.  Negative steps count down |
 | `RETURN` | End a `DO` (or the program) |
-| `WRITE` | List the program in line order |
+| `WRITE [group or line]` | List the whole program, one group, or one exact line in line order |
 | `LOAD file` | Load numbered source lines from a cvit text member, replacing the current program |
 | `SAVE file` | Save the current numbered program to a cvit text member, creating it if needed |
 | `ERASE` | Delete all lines |
@@ -43,12 +43,12 @@ N? 5
 | `QUIT` | Leave FOCAL |
 
 ## Expressions
-`+ - * /` with the usual precedence, unary `-`, parentheses, numbers and variables.  `/` truncates
+`+ - * /` with the usual precedence, right-associative `^` for nonnegative integer powers, unary `-`, parentheses, numbers and variables.  `/` truncates
 toward zero.  Arithmetic wraps at 16 bits.  Errors: `?SYNTAX`, `?DIV0`, `?FULL` (all 128 line slots
-used).  An error aborts the current run and returns to the `*` prompt.
+used); negative exponents produce `?SYNTAX`. Powers wrap at 16 bits, and `0^0` is 1. An error aborts the current run and returns to the `*` prompt.
 
 ## Not (yet) in this FOCAL
-Floating point, named/array variables (`X(1)`), `FSIN`/`FSQT` and other functions, `^`, `MODIFY`,
+Floating point, named/array variables (`X(1)`), `FSIN`/`FSQT` and other functions, `MODIFY`,
 `LIBRARY`, `TYPE $`, `%` output formatting, and line-number-less `IF` forms.
 
 ## Implementation notes
@@ -57,4 +57,4 @@ Floating point, named/array variables (`X(1)`), `FSIN`/`FSQT` and other function
 - Values and `FOR`/`DO` frames are on the hardware stack; the program is stored as 64-byte slots at
   `0x8000-0x9FFF`, so there is no memory shifting; "next line" is a scan for the smallest greater key.
 - Memory: code at `0x5000`; line buffers at `0x7000`/`0x7060`; variables `0x70C0`; interpreter state `0x7100`.
-- Tests: `python3 scripts/mk_test_os.py && python3 scripts/test_focal.py`.
+- Tests: `python3 scripts/mk_test_os.py && python3 scripts/test_focal.py` inside `nix develop`. `testdata/focal-common.session` exercises a common subset inspired by the Nova suite, with biscvit-specific integer output in `testdata/focal-common.expected`. It is not a SIMH parity test.

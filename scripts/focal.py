@@ -14,7 +14,7 @@ SLOTS, SLOTS_END, SLOT_SIZE = 0x8000, 0xA000, 64
 SCALARS = ["V_MAINSP", "V_RETADDR", "V_SAVEDSP", "V_KEY", "V_LINEKEY", "V_HI", "V_LO", "V_HI2",
            "V_PTR", "V_JUMP", "V_RET", "V_QUIT", "V_STOP", "V_T", "V_ACC", "V_BEST", "V_BESTP",
            "V_MK", "V_NEWKEY", "V_CMD", "V_SUB", "V_LEN", "V_HASDOT", "V_L1", "V_L2", "V_L3", "V_SIGN",
-           "V_CNT", "V_STR", "V_KEYT", "V_CH", "V_Q"]
+           "V_CNT", "V_STR", "V_KEYT", "V_CH", "V_Q", "V_PBASE", "V_PEXP"]
 COMMANDS = "TSAIGDFRQCWEL"
 
 
@@ -246,10 +246,10 @@ def build_focal():
     a.jsr_abs("skipsp")
     peek()
     a.cmp_al(ord("-")).bne("ef_1")
-    incz(); a.jsr_abs("eval_factor"); neg_a(); a.rsr()
+    incz(); a.jsr_abs("eval_power"); neg_a(); a.rsr()
     a.label("ef_1")
     a.cmp_al(ord("+")).bne("ef_2")
-    incz(); a.jmp("eval_factor")
+    incz(); a.jmp("eval_power")
     a.label("ef_2")
     a.cmp_al(ord("(")).bne("ef_3")
     incz(); a.jsr_abs("eval_expr"); push_a(); a.jsr_abs("skipsp"); nextch()
@@ -260,6 +260,26 @@ def build_focal():
     a.jsr_abs("parse_number").rsr()
     a.label("ef_var")
     nextch(); a.jsr_abs("upcase").jsr_abs("var_addr").lda_x("Y").rsr()
+
+    # Right-associative integer exponentiation, wrapping like multiplication.
+    a.label("eval_power")
+    a.jsr_abs("eval_factor")
+    push_a(); a.jsr_abs("skipsp"); peek()
+    a.cmp_al(ord("^")).beq("ep_power")
+    pop_a(); a.rsr()
+    a.label("ep_power")
+    incz(); a.jsr_abs("eval_power")
+    a.cmp_ax(0x8000).bhs("err_syntax")
+    a.sta_d("V_PEXP")
+    pop_a(); a.sta_d("V_PBASE")
+    a.lda_i(1)
+    a.label("ep_loop")
+    push_a(); a.lda_d("V_PEXP").bz("ep_done")
+    a.ldb_i(0xFFFF).aab().stb_d("V_PEXP")
+    a.lda_d("V_PBASE").xfr("A", "Y")
+    pop_a(); a.mulu("Y", "A").xfr("B", "A").jmp("ep_loop")
+    a.label("ep_done")
+    pop_a(); a.rsr()
 
     # signed_div: B = dividend, Y = divisor -> B = quotient
     a.label("signed_div")
@@ -284,7 +304,7 @@ def build_focal():
     a.label("sd_3").ldb_d("V_Q").rsr()
 
     a.label("eval_term")
-    a.jsr_abs("eval_factor")
+    a.jsr_abs("eval_power")
     a.label("et_loop")
     push_a()                                   # the accumulator must survive the peek
     a.jsr_abs("skipsp")
@@ -293,10 +313,10 @@ def build_focal():
     a.cmp_al(ord("/")).beq("et_div")
     pop_a(); a.rsr()
     a.label("et_mul")
-    incz(); a.jsr_abs("eval_factor")
+    incz(); a.jsr_abs("eval_power")
     a.xfr("A", "Y"); pop_a(); a.mulu("Y", "A").xfr("B", "A").jmp("et_loop")
     a.label("et_div")
-    incz(); a.jsr_abs("eval_factor")
+    incz(); a.jsr_abs("eval_power")
     a.xfr("A", "Y"); pop_b(); a.jsr_abs("signed_div").xfr("B", "A").jmp("et_loop")
 
     a.label("eval_expr")
@@ -624,13 +644,21 @@ def build_focal():
     a.label("h_save")
     a.lda_i("LINEBUF").xfr("A", "B").svc(0x58).jsr_abs("skip_eol").rsr()
 
-    # WRITE: list the program
+    # WRITE [group|line]: list all, one group, or one exact line.
     a.label("h_write")
+    a.jsr_abs("skipsp"); peek()
+    not_digit("hw_all")
+    a.jsr_abs("parse_lineno").sta_d("V_KEY").sta_d("V_HI2")
+    a.lda_d("V_HASDOT").bnz("hw_start")
+    a.lda_d("V_HI2").ldb_i(99).aab().stb_d("V_HI2").jmp("hw_start")
+    a.label("hw_all")
+    setw("V_KEY", 1); setw("V_HI2", 0xFFFF)
+    a.label("hw_start")
     a.xfr("Z", "A"); push_a()
-    setw("V_KEY", 1)
     a.label("hw_loop")
     a.lda_d("V_KEY").jsr_abs("find_ge").bz("hw_done")
     a.sta_d("V_PTR").xfr("A", "Y").lda_x("Y").sta_d("V_LINEKEY")
+    a.lda_d("V_HI2").ldb_d("V_LINEKEY").sab().bnc("hw_done")
     a.lda_i(100).xfr("A", "Y").lda_d("V_LINEKEY").divu("Y", "A")
     push_a()
     a.xfr("B", "A").jsr_abs("print_number").ldab_i(ord(".")).jsr_abs("putc")
