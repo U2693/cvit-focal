@@ -42,13 +42,48 @@ N? 5
 | `COMMENT text` | Ignore the rest of the line |
 | `QUIT` | Leave FOCAL |
 
+## Dot commands (prompt only)
+
+System escapes at the `*` prompt, in the cvit house style of COMMAND `.STA`/`.CED`:
+
+| Command | Meaning |
+| --- | --- |
+| `.HELP` | List the dot commands and the FOCAL command words |
+| `.SAVE name` | Save the current program to a cvit text member (same service as `SAVE`) |
+| `.LOAD name` | Load a program member, replacing the current program (same service as `LOAD`) |
+| `.RUN name` | Load a program member and run it (load and go); the current program is erased first |
+
+Easter egg: `!name` at the prompt runs a binary cvit member (SVC $56), returning to `*` when it returns. Not listed in `.HELP`.
+
 ## Expressions
-`+ - * /` with the usual precedence, right-associative `^` for nonnegative integer powers, unary `-`, parentheses, numbers and variables.  `/` truncates
-toward zero.  Arithmetic wraps at 16 bits.  Errors: `?SYNTAX`, `?DIV0`, `?FULL` (all 128 line slots
-used); negative exponents produce `?SYNTAX`. Powers wrap at 16 bits, and `0^0` is 1. An error aborts the current run and returns to the `*` prompt.
++ - * / with the usual precedence, right-associative ^, unary -, parentheses, numbers and variables.
+Values are decimal floating point (Stage 3a): 7-digit mantissa, exponent -38..38, held in 4 bytes per
+variable.  Literals may carry a fraction and an E exponent (2.5, 0.001, 6.02E2).  ^ takes an
+integer-valued exponent (truncated, clamped to +-32767); negative exponents reciprocate, and 0^0 is 1.
+TYPE prints 6 significant digits, fixed notation for exponents -3..6 with trailing zeros trimmed,
+Nova-style 0.ddddddE+XX outside that range.  FOR steps may be fractional.  Errors: ?SYNTAX,
+?DIV0 (division by zero), ?OVF (exponent overflow), ?FULL (all 128 line slots used).  An error
+aborts the current run and returns to the * prompt.  The format and semantics are specified in
+docs/focal-float-design.md; the library is differentially tested by scripts/test_fp_stage3.py.
+
+## Variables
+A variable is a single letter (not F) with an optional subscript: X, X(3), X(I+1).  The
+subscript is any expression, truncated toward zero to an integer, and may be negative.  The
+default subscript is 0, so X and X(0) are the same variable.  Variables are created as 0 on
+first reference and live in a pool holding 60 distinct (letter, subscript) pairs; creating
+a 61st gives ?VAR.  Variables survive ERASE (which clears only the program); they are
+cleared at cold start and by .run.
+
+## Functions
+FABS(x) absolute value, FSGN(x) sign (-1, 0 or 1), FITR(x) integer part (truncation toward
+zero, full range, not clamped to 16 bits), FSQT(x) square root by Newton iteration from a
+halved-exponent guess.  As on the Nova, a function name is F plus a two-letter key (AB, SG,
+IT, SQ); the full names are the usual spellings and any extra letters after the key are
+skipped.  FSQT of a negative number and an unknown function both give ?FUN.  F is reserved
+and cannot be used as a variable.
 
 ## Not (yet) in this FOCAL
-Floating point, named/array variables (`X(1)`), `FSIN`/`FSQT` and other functions, `MODIFY`,
+FSIN and other functions, MODIFY,
 `LIBRARY`, `TYPE $`, `%` output formatting, and line-number-less `IF` forms.
 
 ## Implementation notes
@@ -56,5 +91,5 @@ Floating point, named/array variables (`X(1)`), `FSIN`/`FSQT` and other function
   The link register `X`/RT is never used for data because `MULU`/`DIVU` are done on `A:B`.
 - Values and `FOR`/`DO` frames are on the hardware stack; the program is stored as 64-byte slots at
   `0x8000-0x9FFF`, so there is no memory shifting; "next line" is a scan for the smallest greater key.
-- Memory: code at `0x5000`; line buffers at `0x7000`/`0x7060`; variables `0x70C0`; interpreter state `0x7100`.
+- Memory: code at 0x5000 (about 8.5 KB with the FP library); line buffers at 0x7C00/0x7C60; variables 0x7D00 (4 bytes each); interpreter state and FP workspace at 0x7D80.
 - Tests: `python3 scripts/mk_test_os.py && python3 scripts/test_focal.py` inside `nix develop`. `testdata/focal-common.session` exercises a common subset inspired by the Nova suite, with biscvit-specific integer output in `testdata/focal-common.expected`. It is not a SIMH parity test.

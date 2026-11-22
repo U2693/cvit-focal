@@ -1,27 +1,33 @@
 """FOCAL for cvit: builds the SYSTEM/FOCAL executable (CV header + code).
 
-A small FOCAL-69 flavoured interpreter with 16-bit signed integers.  See docs/focal.md.
+A small FOCAL-69 flavoured interpreter with decimal floating point.  See docs/focal.md.
 
 Register conventions: Z = text pointer, A/B = scratch + results (expressions return in A),
 Y = scratch/pointer.  RT (X) is the JSR link register and must never be used for data.
 Values and DO/FOR frames live on the hardware stack (S).
 """
 from cpu6asm import Asm
+from cpu6_float import declare_float_workspace, emit_float_routines
 
 LOAD = 0x5000
-LINEBUF, INBUF, VARS = 0x7000, 0x7060, 0x70C0
+LINEBUF, INBUF, VARS = 0x7C00, 0x7C60, 0x7D00
 SLOTS, SLOTS_END, SLOT_SIZE = 0x8000, 0xA000, 64
+POOL_MAX = 60
 SCALARS = ["V_MAINSP", "V_RETADDR", "V_SAVEDSP", "V_KEY", "V_LINEKEY", "V_HI", "V_LO", "V_HI2",
            "V_PTR", "V_JUMP", "V_RET", "V_QUIT", "V_STOP", "V_T", "V_ACC", "V_BEST", "V_BESTP",
            "V_MK", "V_NEWKEY", "V_CMD", "V_SUB", "V_LEN", "V_HASDOT", "V_L1", "V_L2", "V_L3", "V_SIGN",
-           "V_CNT", "V_STR", "V_KEYT", "V_CH", "V_Q", "V_PBASE", "V_PEXP"]
+           "V_CNT", "V_STR", "V_KEYT", "V_CH", "V_Q", "V_PBASE", "V_PEXP", "V_SVZ",
+           "V_FK1", "V_FK2", "V_FK12", "V_FT1", "V_FT2", "V_FX", "V_FXP", "V_FY", "V_FYP", "V_FCNT",
+           "V_PCNT", "V_VK", "V_VS", "V_VC"]
 COMMANDS = "TSAIGDFRQCWEL"
 
 
 def build_focal():
-    a = Asm(LOAD).vars_at(0x7100)
+    a = Asm(LOAD).vars_at(0x7D80)
     for n in SCALARS:
         a.var(n)
+    declare_float_workspace(a)
+    a.var("V_POOL", POOL_MAX * 8)
     for n, v in (("LINEBUF", LINEBUF), ("INBUF", INBUF), ("VARS", VARS), ("SLOTS", SLOTS)):
         a.equ(n, v)
 
@@ -35,11 +41,17 @@ def build_focal():
     S("s_syntax", "\r\n?SYNTAX\r\n")
     S("s_div0", "\r\n?DIV0\r\n")
     S("s_full", "\r\n?FULL\r\n")
+    S("s_ovf", "\r\n?OVF\r\n")
+    S("s_fun", "\r\n?FUN\r\n")
+    S("s_var", "\r\n?VAR\r\n")
+    S("s_help", "\r\n.HELP .SAVE F .LOAD F .RUN F\r\nASK COMMENT DO ERASE FOR GO IF LOAD QUIT RETURN SAVE SET TYPE WRITE\r\n")
 
     push_a = lambda: a.sta_x("S", "-")
     pop_a = lambda: a.lda_x("S", "+")
     push_b = lambda: a.stb_x("S", "-")
     pop_b = lambda: a.ldb_x("S", "+")
+    push_ab = lambda: (push_a(), push_b())
+    pop_ab = lambda: (pop_b(), pop_a())
     incz = lambda: a.inr("Z")
     peek = lambda: a.ldab_x("Z")
     nextch = lambda: a.ldab_x("Z", "+")
@@ -73,6 +85,8 @@ def build_focal():
     a.jsr_abs("skipsp")
     peek()
     a.cmp_al(0x0D).beq("main_loop")
+    a.cmp_al(46).beq("dot_cmd")
+    a.cmp_al(33).beq("bang_cmd")
     not_digit("direct")
     a.jsr_abs("store_line").jmp("main_loop")
     a.label("direct")
@@ -90,11 +104,94 @@ def build_focal():
     a.lda_d("V_RETADDR").xfr("A", "X")
     a.rsr()
 
+    # ------------------------------------------------------------ dot commands / bang
+    # Prompt-only system escapes (cvit house style, cf. COMMAND .STA/.CED):
+    # .HELP, .SAVE f, .LOAD f, .RUN f (load and go).  !name runs a binary
+    # member via SVC $56 (easter egg; deliberately not listed in .HELP).
+    # .SAVE/.LOAD rewrite the request into canonical SAVE/LOAD form in INBUF
+    # for the host file services (SVC $58/$57), which parse that prefix.
+    a.label("dot_cmd")
+    incz()
+    nextch(); a.jsr_abs("upcase").stab_d("V_CMD")
+    a.jsr_abs("skip_word_tail").jsr_abs("skipsp")
+    for ch, lab in (("H", "dot_help"), ("S", "dot_save"), ("L", "dot_load"), ("R", "dot_run")):
+        nxt = f"dot_n_{ch}"
+        a.ldab_d("V_CMD").cmp_al(ord(ch)).bne(nxt)
+        a.jmp_abs(lab)
+        a.label(nxt)
+    a.jmp_abs("err_syntax")
+
+    a.label("dot_help")
+    puts("s_help")
+    a.jmp_abs("main_loop")
+
+    a.label("dot_save")
+    a.lda_i("INBUF").xfr("A", "Y")
+    for c in "SAVE ":
+        a.ldab_i(ord(c)).stab_x("Y", "+")
+    a.jsr_abs("copy_token")
+    a.lda_i("INBUF").xfr("A", "B").svc(0x58)
+    a.jmp_abs("main_loop")
+
+    a.label("dot_load")
+    a.lda_i("INBUF").xfr("A", "Y")
+    for c in "LOAD ":
+        a.ldab_i(ord(c)).stab_x("Y", "+")
+    a.jsr_abs("copy_token")
+    a.lda_i("INBUF").xfr("A", "B").svc(0x57)
+    a.jmp_abs("main_loop")
+
+    a.label("dot_run")
+    a.lda_i("INBUF").xfr("A", "Y")
+    for c in "LOAD ":
+        a.ldab_i(ord(c)).stab_x("Y", "+")
+    a.jsr_abs("copy_token")
+    a.jsr_abs("clear_all")
+    a.lda_i("INBUF").xfr("A", "B").svc(0x57)
+    setw("V_KEY", 1); setw("V_HI", 0xFFFF); setw("V_STOP", 0)
+    a.jsr_abs("run_program")
+    a.lda_d("V_QUIT").bnz("do_exit")
+    a.jmp_abs("main_loop")
+
+    a.label("bang_cmd")
+    incz()
+    a.jsr_abs("skipsp")
+    a.lda_i(0x2F00).xfr("A", "Y")
+    for c in "RUN ":
+        a.ldab_i(ord(c)).stab_x("Y", "+")
+    a.jsr_abs("copy_token")
+    a.svc(0x56)
+    a.jmp_abs("main_loop")
+
+    # copy_token: copy the filename token at Z (chars > space) to Y, then CR+NUL.
+    a.label("copy_token")
+    peek()
+    a.cmp_al(0x21).blo("ct_done")
+    nextch()
+    a.stab_x("Y", "+").jmp("copy_token")
+    a.label("ct_done")
+    a.ldab_i(0x0D).stab_x("Y", "+")
+    a.ldab_i(0).stab_x("Y", "+")
+    a.rsr()
+
     # ------------------------------------------------------------ errors
-    for name, msg in (("err_syntax", "s_syntax"), ("err_div0", "s_div0"), ("err_full", "s_full")):
+    for name, msg in (("err_syntax", "s_syntax"), ("err_div0", "s_div0"), ("err_full", "s_full"), ("err_ovf", "s_ovf"), ("err_fun", "s_fun"), ("err_var", "s_var")):
         a.label(name)
         puts(msg)
         a.jmp_abs("main_loop")
+
+    # fp_clear/fp_check: manage FP library error flags around ops; both
+    # preserve A:B (fp_check abandons the stack only on the error path,
+    # where main_loop resets S anyway).
+    a.label("fp_clear")
+    push_a()
+    a.lda_i(0).sta_d("fp_ovf").sta_d("fp_divz")
+    pop_a(); a.rsr()
+    a.label("fp_check")
+    push_ab()
+    a.lda_d("fp_ovf").bnz("err_ovf")
+    a.lda_d("fp_divz").bnz("err_div0")
+    pop_ab(); a.rsr()
 
     # ------------------------------------------------------------ console
     a.label("putc").ldbb_i(1).svc(0x40).rsr()
@@ -195,12 +292,51 @@ def build_focal():
     a.label("ps_2")
     a.jsr_abs("putc").jmp("print_str_z")
 
-    # var_addr: AL = upper-case letter -> Y = address of variable
-    a.label("var_addr")
+    # var_ref: AL = upper-case letter -> Y = address of the variable value.
+    # An optional ( expr ) subscript may follow in the text; the default
+    # subscript is 0, so X and X(0) are the same variable, as on dusky.
+    # Variables live in an append-only pool keyed by (letter, subscript),
+    # created zeroed on first reference; a full pool gives ?VAR.  The key
+    # and subscript ride the stack across the subscript evaluation, so a
+    # subscript may itself contain variables and functions.
+    a.label("var_ref")
     a.cmp_al(0x41).blo("err_syntax")
     a.cmp_al(0x5B).bhs("err_syntax")
-    a.ldbb_i(0x41).sabb().lda_i(0).xfrb_bl_al().sll_ax(1)
-    a.ldb_i("VARS").aab().xfr("B", "Y").rsr()
+    a.cmp_al(ord("F")).beq("err_syntax")
+    a.stab_d("V_VK+1")
+    a.ldab_i(0).stab_d("V_VK")
+    a.lda_d("V_VK")
+    push_a()
+    a.lda_i(0)
+    push_a()
+    a.jsr_abs("skipsp")
+    peek()
+    a.cmp_al(ord("(")).bne("vr_lookup")
+    incz(); a.jsr_abs("eval_expr")
+    push_ab(); a.jsr_abs("skipsp"); nextch(); a.cmp_al(ord(")")).bne("err_syntax")
+    pop_ab(); a.jsr_abs("fp_to_i16")
+    a.sta_x("S", disp=0)
+    a.label("vr_lookup")
+    pop_a(); a.sta_d("V_VS")
+    pop_a(); a.sta_d("V_VK")
+    a.lda_i("V_POOL").xfr("A", "Y")
+    a.lda_d("V_PCNT").sta_d("V_VC")
+    a.label("vr_scan")
+    a.lda_d("V_VC").bz("vr_new")
+    a.lda_x("Y").ldb_d("V_VK").sab().bnz("vr_next")
+    a.lda_x("Y", disp=2).ldb_d("V_VS").sab().bnz("vr_next")
+    a.inr("Y", 4).rsr()
+    a.label("vr_next")
+    a.inr("Y", 8)
+    a.lda_d("V_VC").ldb_i(0xFFFF).aab().stb_d("V_VC")
+    a.jmp("vr_scan")
+    a.label("vr_new")
+    a.lda_d("V_PCNT").cmp_ax(POOL_MAX).bhs("err_var")
+    a.lda_d("V_VK").sta_x("Y")
+    a.lda_d("V_VS").sta_x("Y", disp=2)
+    a.lda_i(0).sta_x("Y", disp=4).sta_x("Y", disp=6)
+    a.lda_d("V_PCNT").ina().sta_d("V_PCNT")
+    a.inr("Y", 4).rsr()
 
     # ------------------------------------------------------------ numbers and expressions
     # accum_digit: AL = digit char; V_ACC = V_ACC * 10 + digit
@@ -246,92 +382,203 @@ def build_focal():
     a.jsr_abs("skipsp")
     peek()
     a.cmp_al(ord("-")).bne("ef_1")
-    incz(); a.jsr_abs("eval_power"); neg_a(); a.rsr()
+    incz(); a.jsr_abs("eval_power"); a.jsr_abs("fp_neg"); a.rsr()
     a.label("ef_1")
     a.cmp_al(ord("+")).bne("ef_2")
     incz(); a.jmp("eval_power")
     a.label("ef_2")
-    a.cmp_al(ord("(")).bne("ef_3")
-    incz(); a.jsr_abs("eval_expr"); push_a(); a.jsr_abs("skipsp"); nextch()
+    a.cmp_al(ord("(")).bne("ef_25")
+    incz(); a.jsr_abs("eval_expr"); push_ab(); a.jsr_abs("skipsp"); nextch()
     a.cmp_al(ord(")")).bne("err_syntax")
-    pop_a(); a.rsr()
+    pop_ab(); a.rsr()
+    a.label("ef_25")
+    a.cmp_al(ord("F")).beq("ef_fun")
+    a.cmp_al(ord("f")).beq("ef_fun")
     a.label("ef_3")
+    a.cmp_al(ord(".")).beq("ef_num")
     not_digit("ef_var")
-    a.jsr_abs("parse_number").rsr()
+    a.label("ef_num")
+    a.jsr_abs("fp_parse")
+    push_ab()
+    a.lda_d("fp_perr").bnz("err_syntax")
+    pop_ab()
+    a.rsr()
     a.label("ef_var")
-    nextch(); a.jsr_abs("upcase").jsr_abs("var_addr").lda_x("Y").rsr()
+    nextch(); a.jsr_abs("upcase").jsr_abs("var_ref").lda_x("Y").ldb_x("Y", disp=2).rsr()
 
-    # Right-associative integer exponentiation, wrapping like multiplication.
+    # Functions: F plus a two-letter key (AB/SG/IT/SQ); extra letters are
+    # skipped, then ( expr ).  The packed key rides the stack across the
+    # argument evaluation, as on dusky, so nested calls work.
+    a.label("ef_fun")
+    incz()
+    nextch(); a.jsr_abs("upcase").stab_d("V_FK1")
+    nextch(); a.jsr_abs("upcase").stab_d("V_FK2")
+    a.label("ef_fsk")
+    peek(); a.jsr_abs("upcase")
+    a.cmp_al(0x41).blo("ef_fop")
+    a.cmp_al(0x5B).bhs("ef_fop")
+    incz(); a.jmp("ef_fsk")
+    a.label("ef_fop")
+    a.ldab_d("V_FK1").sll_ax(8)
+    a.ldb_i(0).ldbb_d("V_FK2").aab()
+    push_b()
+    a.jsr_abs("skipsp"); nextch(); a.cmp_al(ord("(")).bne("err_syntax")
+    a.jsr_abs("eval_expr")
+    push_ab(); a.jsr_abs("skipsp"); nextch(); a.cmp_al(ord(")")).bne("err_syntax")
+    pop_ab()
+    a.sta_d("V_FT1").stb_d("V_FT2")
+    pop_b(); a.stb_d("V_FK12")
+    a.ldab_d("V_FK12").cmp_al(ord("A")).beq("ef_d_a")
+    a.cmp_al(ord("I")).beq("ef_d_i")
+    a.cmp_al(ord("S")).beq("ef_d_s")
+    a.jmp_abs("err_fun")
+    a.label("ef_d_a")
+    a.ldab_d("V_FK12+1").cmp_al(ord("B")).bne("err_fun")
+    a.lda_d("V_FT1").ldb_d("V_FT2").jmp("f_abs")
+    a.label("ef_d_i")
+    a.ldab_d("V_FK12+1").cmp_al(ord("T")).bne("err_fun")
+    a.lda_d("V_FT1").ldb_d("V_FT2").jmp("f_itr")
+    a.label("ef_d_s")
+    a.ldab_d("V_FK12+1").cmp_al(ord("G")).beq("ef_d_sg")
+    a.cmp_al(ord("Q")).bne("err_fun")
+    a.lda_d("V_FT1").ldb_d("V_FT2").jmp("f_sqt")
+    a.label("ef_d_sg")
+    a.lda_d("V_FT1").ldb_d("V_FT2").jmp("f_sgn")
+
+    a.label("f_abs")
+    tst_a().bm("f_ab_n")
+    a.rsr()
+    a.label("f_ab_n")
+    a.jsr_abs("fp_neg").rsr()
+
+    a.label("f_sgn")
+    tst_a().bnz("f_sg_nz")
+    tst_b().bnz("f_sg_pos")
+    a.rsr()
+    a.label("f_sg_nz")
+    tst_a().bm("f_sg_neg")
+    a.label("f_sg_pos")
+    a.lda_i(0x400F).ldb_i(0x4240).rsr()
+    a.label("f_sg_neg")
+    a.lda_i(0xC00F).ldb_i(0x4240).rsr()
+
+    a.label("f_itr")
+    a.jsr_abs("fp_trunc").rsr()
+
+    # FSQT by Newton iteration from a halved-exponent guess (as on dusky):
+    # guess mantissa 1.0 with exponent floor(e/2); 25 fixed iterations.
+    a.label("f_sqt")
+    tst_a().bnz("f_sq_nz")
+    tst_b().bz("f_sq_rt")
+    a.label("f_sq_nz")
+    tst_a().bm("err_fun")
+    a.sta_d("V_FX").stb_d("V_FXP")
+    a.lda_i(0).ldab_d("V_FX").ldb_i(64).sab().xfr("B", "A")
+    a.cmp_ax(0).bm("f_sq_gn")
+    a.div_imm(2, "A").xfr("B", "A").jmp("f_sq_g")
+    a.label("f_sq_gn")
+    neg_a(); a.ina().div_imm(2, "A").xfr("B", "A"); neg_a()
+    a.label("f_sq_g")
+    a.ldb_i(64).aab().xfr("B", "A").sll_ax(8)
+    a.ldb_i(0x0F).aab().xfr("B", "A")
+    a.ldb_i(0x4240)
+    a.sta_d("V_FY").stb_d("V_FYP")
+    setw("V_FCNT", 25)
+    a.label("f_sq_lp")
+    a.lda_d("V_FY").ldb_d("V_FYP").sta_d("fp_fop").stb_d("fp_fop+2")
+    a.lda_d("V_FX").ldb_d("V_FXP")
+    a.jsr_abs("fp_clear").jsr_abs("fp_div").jsr_abs("fp_check")
+    a.sta_d("fp_fop").stb_d("fp_fop+2")
+    a.lda_d("V_FY").ldb_d("V_FYP")
+    a.jsr_abs("fp_clear").jsr_abs("fp_add").jsr_abs("fp_check")
+    a.sta_d("V_FY").stb_d("V_FYP")
+    a.lda_i(0x3F4C).sta_d("fp_fop")
+    a.lda_i(0x4B40).sta_d("fp_fop+2")
+    a.lda_d("V_FY").ldb_d("V_FYP")
+    a.jsr_abs("fp_clear").jsr_abs("fp_mul").jsr_abs("fp_check")
+    a.sta_d("V_FY").stb_d("V_FYP")
+    a.lda_d("V_FCNT").ldb_i(0xFFFF).aab().stb_d("V_FCNT")
+    a.lda_d("V_FCNT").bnz("f_sq_lp")
+    a.lda_d("V_FY").ldb_d("V_FYP")
+    a.label("f_sq_rt")
+    a.rsr()
+
+    # Right-associative power: the exponent goes through fp_to_i16
+    # (truncated, clamped); a negative exponent reciprocates at the end.
+    # The base sits in fp_fop, the running result in V_BEST/V_BESTP.
     a.label("eval_power")
     a.jsr_abs("eval_factor")
-    push_a(); a.jsr_abs("skipsp"); peek()
+    push_ab(); a.jsr_abs("skipsp"); peek()
     a.cmp_al(ord("^")).beq("ep_power")
-    pop_a(); a.rsr()
+    pop_ab(); a.rsr()
     a.label("ep_power")
     incz(); a.jsr_abs("eval_power")
-    a.cmp_ax(0x8000).bhs("err_syntax")
-    a.sta_d("V_PEXP")
-    pop_a(); a.sta_d("V_PBASE")
-    a.lda_i(1)
-    a.label("ep_loop")
-    push_a(); a.lda_d("V_PEXP").bz("ep_done")
-    a.ldb_i(0xFFFF).aab().stb_d("V_PEXP")
-    a.lda_d("V_PBASE").xfr("A", "Y")
-    pop_a(); a.mulu("Y", "A").xfr("B", "A").jmp("ep_loop")
-    a.label("ep_done")
-    pop_a(); a.rsr()
-
-    # signed_div: B = dividend, Y = divisor -> B = quotient
-    a.label("signed_div")
-    a.xfr("Y", "A")
-    tst_a()
-    a.bz("err_div0")
+    a.jsr_abs("fp_to_i16").sta_d("V_PEXP")
+    pop_ab(); a.sta_d("fp_fop").stb_d("fp_fop+2")
     setw("V_SIGN", 0)
-    tst_b()
-    a.bp("sd_1")
-    a.lda_i(0).sab()
-    a.lda_d("V_SIGN").ina().sta_d("V_SIGN")
-    a.label("sd_1")
-    a.xfr("Y", "A")
-    tst_a()
-    a.bp("sd_2")
-    push_b(); a.xfr("Y", "B").lda_i(0).sab().xfr("B", "Y"); pop_b()
-    a.lda_d("V_SIGN").ina().sta_d("V_SIGN")
-    a.label("sd_2")
-    a.xfr("B", "A").divu("Y", "A")
-    a.stb_d("V_Q").lda_d("V_SIGN").cmp_ax(1).bne("sd_3")
-    a.ldb_d("V_Q").lda_i(0).sab().rsr()
-    a.label("sd_3").ldb_d("V_Q").rsr()
+    a.lda_d("V_PEXP").bp("ep_pos")
+    a.lda_i(1).sta_d("V_SIGN")
+    a.lda_d("V_PEXP"); neg_a(); a.sta_d("V_PEXP")
+    a.label("ep_pos")
+    a.lda_i(0x400F).sta_d("V_BEST")
+    a.lda_i(0x4240).sta_d("V_BESTP")
+    a.label("ep_loop")
+    a.lda_d("V_PEXP").bz("ep_fin")
+    a.ldb_i(0xFFFF).aab().stb_d("V_PEXP")
+    a.lda_d("V_BEST").ldb_d("V_BESTP")
+    a.jsr_abs("fp_clear").jsr_abs("fp_mul").jsr_abs("fp_check")
+    a.sta_d("V_BEST").stb_d("V_BESTP")
+    a.jmp("ep_loop")
+    a.label("ep_fin")
+    a.lda_d("V_SIGN").bz("ep_ld")
+    a.lda_d("V_BEST").ldb_d("V_BESTP")
+    a.sta_d("fp_fop").stb_d("fp_fop+2")
+    a.lda_i(0x400F).ldb_i(0x4240)
+    a.jsr_abs("fp_clear").jsr_abs("fp_div").jsr_abs("fp_check")
+    a.rsr()
+    a.label("ep_ld")
+    a.lda_d("V_BEST").ldb_d("V_BESTP")
+    a.rsr()
 
     a.label("eval_term")
     a.jsr_abs("eval_power")
     a.label("et_loop")
-    push_a()                                   # the accumulator must survive the peek
+    push_ab()                                   # the accumulator must survive the peek
     a.jsr_abs("skipsp")
     peek()
     a.cmp_al(ord("*")).beq("et_mul")
     a.cmp_al(ord("/")).beq("et_div")
-    pop_a(); a.rsr()
+    pop_ab(); a.rsr()
     a.label("et_mul")
     incz(); a.jsr_abs("eval_power")
-    a.xfr("A", "Y"); pop_a(); a.mulu("Y", "A").xfr("B", "A").jmp("et_loop")
+    a.sta_d("fp_fop").stb_d("fp_fop+2")
+    pop_ab(); a.jsr_abs("fp_clear").jsr_abs("fp_mul").jsr_abs("fp_check")
+    a.jmp("et_loop")
     a.label("et_div")
     incz(); a.jsr_abs("eval_power")
-    a.xfr("A", "Y"); pop_b(); a.jsr_abs("signed_div").xfr("B", "A").jmp("et_loop")
+    a.sta_d("fp_fop").stb_d("fp_fop+2")
+    pop_ab(); a.jsr_abs("fp_clear").jsr_abs("fp_div").jsr_abs("fp_check")
+    a.jmp("et_loop")
 
     a.label("eval_expr")
     a.jsr_abs("eval_term")
     a.label("ee_loop")
-    push_a()
+    push_ab()
     a.jsr_abs("skipsp")
     peek()
     a.cmp_al(ord("+")).beq("ee_add")
     a.cmp_al(ord("-")).beq("ee_sub")
-    pop_a(); a.rsr()
+    pop_ab(); a.rsr()
     a.label("ee_add")
-    incz(); a.jsr_abs("eval_term"); a.xfr("A", "B"); pop_a(); a.aab().xfr("B", "A").jmp("ee_loop")
+    incz(); a.jsr_abs("eval_term")
+    a.sta_d("fp_fop").stb_d("fp_fop+2")
+    pop_ab(); a.jsr_abs("fp_clear").jsr_abs("fp_add").jsr_abs("fp_check")
+    a.jmp("ee_loop")
     a.label("ee_sub")
-    incz(); a.jsr_abs("eval_term"); a.xfr("A", "B"); pop_a(); a.sab().xfr("B", "A").jmp("ee_loop")
+    incz(); a.jsr_abs("eval_term")
+    a.sta_d("fp_fop").stb_d("fp_fop+2")
+    pop_ab(); a.jsr_abs("fp_clear").jsr_abs("fp_sub").jsr_abs("fp_check")
+    a.jmp("ee_loop")
 
     # ------------------------------------------------------------ program store (64-byte slots: key, text, CR)
     a.label("clear_slots")
@@ -347,7 +594,8 @@ def build_focal():
     a.lda_i("VARS").xfr("A", "Y")
     a.label("ca_loop")
     a.lda_i(0).sta_x("Y", "+")
-    a.xfr("Y", "A").cmp_ax(VARS + 52).blo("ca_loop").rsr()
+    a.xfr("Y", "A").cmp_ax(VARS + 104).blo("ca_loop")
+    a.lda_i(0).sta_d("V_PCNT").rsr()
 
     # scan_key: A = address of slot whose key == V_MK, or 0
     a.label("scan_key")
@@ -493,17 +741,26 @@ def build_focal():
     a.label("ht_fmt_skip")
     incz(); a.jmp("ht_fmt")
     a.label("ht_expr")
-    a.jsr_abs("eval_expr").jsr_abs("print_number").jmp("h_type")
+    a.jsr_abs("eval_expr")
+    push_ab()
+    a.xfr("Z", "A").sta_d("V_SVZ")
+    pop_ab()
+    a.jsr_abs("fp_print")
+    a.lda_d("V_SVZ").xfr("A", "Z")
+    a.jmp("h_type")
 
     a.label("h_set_or_save")
     a.ldab_d("V_SUB").cmp_al(ord("A")).beq("h_save")
     a.label("h_set")
-    a.jsr_abs("skipsp"); nextch(); a.jsr_abs("upcase").jsr_abs("var_addr")
+    a.jsr_abs("skipsp"); nextch(); a.jsr_abs("upcase").jsr_abs("var_ref")
     a.xfr("Y", "A"); push_a()
     a.jsr_abs("skipsp"); nextch()
     a.cmp_al(ord("=")).bne("err_syntax")
     a.jsr_abs("eval_expr")
-    a.xfr("A", "B"); pop_a(); a.xfr("A", "Y").xfr("B", "A").sta_x("Y")
+    a.sta_d("V_PBASE").stb_d("V_PEXP")
+    pop_a(); a.xfr("A", "Y")
+    a.lda_d("V_PBASE").sta_x("Y")
+    a.ldb_d("V_PEXP").stb_x("Y", disp=2)
     a.rsr()
 
     a.label("h_ask")
@@ -523,7 +780,7 @@ def build_focal():
     a.cmp_al(0x22).bne("ha_var")
     incz(); a.jsr_abs("print_str_z"); setw("V_STR", 1); a.jmp("ha_loop")
     a.label("ha_var")
-    nextch(); a.jsr_abs("upcase").jsr_abs("var_addr")
+    nextch(); a.jsr_abs("upcase").jsr_abs("var_ref")
     a.xfr("Y", "A"); push_a()
     a.lda_d("V_STR").bnz("ha_noprompt")
     a.ldab_i(ord(":")).jsr_abs("putc")
@@ -532,7 +789,11 @@ def build_focal():
     a.lda_i("INBUF").xfr("A", "Y").jsr_abs("read_line")
     a.xfr("Z", "A"); push_a()
     a.lda_i("INBUF").xfr("A", "Z").jsr_abs("eval_expr")
-    a.xfr("A", "B"); pop_a(); a.xfr("A", "Z"); pop_a(); a.xfr("A", "Y").xfr("B", "A").sta_x("Y")
+    a.sta_d("V_PBASE").stb_d("V_PEXP")
+    pop_a(); a.xfr("A", "Z")
+    pop_a(); a.xfr("A", "Y")
+    a.lda_d("V_PBASE").sta_x("Y")
+    a.ldb_d("V_PEXP").stb_x("Y", disp=2)
     a.jmp("ha_loop")
 
     a.label("h_go")
@@ -548,7 +809,7 @@ def build_focal():
     a.label("h_if")
     a.jsr_abs("skipsp"); nextch()
     a.cmp_al(ord("(")).bne("err_syntax")
-    a.jsr_abs("eval_expr"); push_a()
+    a.jsr_abs("eval_expr"); push_ab()
     a.jsr_abs("skipsp"); nextch()
     a.cmp_al(ord(")")).bne("err_syntax")
     for v in ("V_L1", "V_L2", "V_L3"):
@@ -563,9 +824,14 @@ def build_focal():
         a.cmp_al(ord(",")).bne("if_choose")
         incz()
     a.label("if_choose")
-    pop_a()
+    pop_ab()
     tst_a()
-    a.bm("if_neg").bz("if_zero")
+    a.bnz("if_nz")
+    tst_b()
+    a.bz("if_zero")
+    a.label("if_nz")
+    tst_a()
+    a.bm("if_neg")
     a.lda_d("V_L3").jmp("if_go")
     a.label("if_neg").lda_d("V_L1").jmp("if_go")
     a.label("if_zero").lda_d("V_L2")
@@ -593,47 +859,65 @@ def build_focal():
     pop_a(); a.xfr("A", "Z")
     a.rsr()
 
-    # FOR v=a[,step],end[;body...]   frame: S+0 end, +2 step, +4 var addr, +6 body Z
+    # FOR v=a[,step],end[;body...]   frame: S+0..3 end, +4..7 step, +8 var addr, +10 body Z
     a.label("h_for")
-    a.xfr("S", "A").ldb_i(0xFFF8).aab().xfr("B", "S")
-    a.jsr_abs("skipsp"); nextch(); a.jsr_abs("upcase").jsr_abs("var_addr")
-    a.xfr("Y", "A").sta_x("S", disp=4)
+    a.xfr("S", "A").ldb_i(0xFFF4).aab().xfr("B", "S")
+    a.jsr_abs("skipsp"); nextch(); a.jsr_abs("upcase").jsr_abs("var_ref")
+    a.xfr("Y", "A").sta_x("S", disp=8)
     a.jsr_abs("skipsp"); nextch()
     a.cmp_al(ord("=")).bne("err_syntax")
     a.jsr_abs("eval_expr")
-    a.xfr("A", "B").lda_x("S", disp=4).xfr("A", "Y").xfr("B", "A").sta_x("Y")
+    a.sta_d("V_PBASE").stb_d("V_PEXP")
+    a.lda_x("S", disp=8).xfr("A", "Y")
+    a.lda_d("V_PBASE").sta_x("Y")
+    a.ldb_d("V_PEXP").stb_x("Y", disp=2)
     a.jsr_abs("skipsp"); nextch()
     a.cmp_al(ord(",")).bne("err_syntax")
-    a.jsr_abs("eval_expr").sta_x("S", disp=0)
+    a.jsr_abs("eval_expr").sta_x("S", disp=0).stb_x("S", disp=2)
     a.jsr_abs("skipsp")
     peek()
     a.cmp_al(ord(",")).bne("for_two")
     incz()
-    a.lda_x("S", disp=0).sta_x("S", disp=2)
-    a.jsr_abs("eval_expr").sta_x("S", disp=0)
+    a.lda_x("S", disp=0).sta_x("S", disp=4)
+    a.lda_x("S", disp=2).sta_x("S", disp=6)
+    a.jsr_abs("eval_expr").sta_x("S", disp=0).stb_x("S", disp=2)
     a.jmp("for_body")
-    a.label("for_two").lda_i(1).sta_x("S", disp=2)
+    a.label("for_two")
+    a.lda_i(0x400F).sta_x("S", disp=4)
+    a.lda_i(0x4240).sta_x("S", disp=6)
     a.label("for_body")
     a.jsr_abs("skipsp")
     peek()
     a.cmp_al(ord(";")).bne("for_z")
     incz()
-    a.label("for_z").xfr("Z", "A").sta_x("S", disp=6)
+    a.label("for_z").xfr("Z", "A").sta_x("S", disp=10)
     a.label("fl_top")
-    a.lda_x("S", disp=4).xfr("A", "Y")
-    a.lda_x("S", disp=2).bm("fl_neg")
-    a.lda_x("S", disp=0).ldb_x("Y").sab().bm("fl_exit").jmp("fl_body")
+    a.lda_x("S", disp=0).sta_d("fp_fop")
+    a.lda_x("S", disp=2).sta_d("fp_fop+2")
+    a.lda_x("S", disp=8).xfr("A", "Y").lda_x("Y").ldb_x("Y", disp=2)
+    a.jsr_abs("fp_cmp")
+    a.sta_d("V_T")
+    a.lda_x("S", disp=4).sta_d("V_ACC").lda_d("V_ACC")
+    a.bm("fl_neg")
+    a.lda_d("V_T").cmp_ax(1).beq("fl_exit").jmp("fl_body")
     a.label("fl_neg")
-    a.lda_x("Y").ldb_x("S", disp=0).sab().bm("fl_exit")
+    a.lda_d("V_T").cmp_ax(0xFFFF).beq("fl_exit")
     a.label("fl_body")
-    a.lda_x("S", disp=6).xfr("A", "Z")
+    a.lda_x("S", disp=10).xfr("A", "Z")
     a.jsr_abs("exec_line")
     a.lda_d("V_STOP").bnz("fl_exit")
-    a.lda_x("S", disp=4).xfr("A", "Y").lda_x("Y").ldb_x("S", disp=2).aab().stb_x("Y")
+    a.lda_x("S", disp=4).sta_d("fp_fop")
+    a.lda_x("S", disp=6).sta_d("fp_fop+2")
+    a.lda_x("S", disp=8).xfr("A", "Y").lda_x("Y").ldb_x("Y", disp=2)
+    a.jsr_abs("fp_clear").jsr_abs("fp_add").jsr_abs("fp_check")
+    a.sta_d("V_PBASE").stb_d("V_PEXP")
+    a.lda_x("S", disp=8).xfr("A", "Y")
+    a.lda_d("V_PBASE").sta_x("Y")
+    a.ldb_d("V_PEXP").stb_x("Y", disp=2)
     a.jmp("fl_top")
     a.label("fl_exit")
     a.jsr_abs("skip_eol")
-    a.xfr("S", "A").ldb_i(8).aab().xfr("B", "S")
+    a.xfr("S", "A").ldb_i(12).aab().xfr("B", "S")
     a.rsr()
 
     # LOAD/SAVE use emulator-assisted cvit file services.  The service reads
@@ -675,12 +959,16 @@ def build_focal():
     a.label("hw_done")
     pop_a(); a.xfr("A", "Z").jsr_abs("skip_eol").rsr()
 
+    emit_float_routines(a)
+
     # ------------------------------------------------------------ data
     for name, text in strings.items():
         a.label(name).asciz(text)
 
     code = a.bytes()
     hdr = b"CV" + LOAD.to_bytes(2, "big") * 2 + len(code).to_bytes(2, "big") + b"\x01"
+    assert a.syms["V_POOL"] + POOL_MAX * 8 <= SLOTS, "variable pool overruns program slots"
+    assert LOAD + len(hdr + code) <= LINEBUF, "FOCAL code overruns line buffers"
     return hdr + code, a
 
 

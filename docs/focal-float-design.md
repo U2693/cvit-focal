@@ -1,41 +1,43 @@
-# CPU6 FOCAL floating-point work
+# CPU6 FOCAL floating point
 
-Status: **experimental; not yet used by FOCAL**. FOCAL still evaluates signed
-16-bit integers. `scripts/cpu6_float.py` provides the first independently
-testable CPU6 primitive (`fp_from_i16`), and `scripts/test_cpu6_float.py` runs
-it on the emulated CPU6 against an exact host-side encoding oracle.
+Status: **Stage 3a-i complete; not yet wired into FOCAL**. The decimal FP
+library in  is implemented and differentially tested
+against a Python model by  (arithmetic, compare,
+conversions, decimal parse and print). Wiring it into the FOCAL evaluator is
+Stage 3a-ii.
 
 ## Representation
 
-Follow FOCAL/Nova's packed DG single format: big-endian 32-bit word, sign bit,
-7-bit excess-64 hexadecimal exponent, 24-bit fraction, canonical zero all
-zero. A nonzero value is `(-1)^sign * fraction / 2^24 * 16^(exp-64)`, with a
-nonzero high hexadecimal fraction digit. This is a compatibility target, not
-an assertion that Centurion hardware used this format. The Nova reference is
-`../dusky-petrel/sd/focal.asm` and its `docs/focal.md`.
+The internal format is decimal, not the DG binary format an earlier
+experiment used. Nothing outside the evaluator ever sees raw float bits
+(LOCAL stores program text), so the format that is cheap on a CPU6 wins.
+Four bytes, big-endian: byte 0 is sign (0x80) ORed with (exp10 + 64);
+bytes 1-3 hold a 7-digit mantissa M (1000000..9999999) as a binary integer.
+Value = M x 10^(exp10 - 6). Zero is four zero bytes. exp10 range is -38..38;
+beyond that an op sets fp_ovf (positive overflow) or flushes to zero
+(underflow). Division by zero sets fp_divz.
 
-The first primitive accepts a signed integer in AX and returns the packed
-value in AX:BX, clobbering only those registers, flags, and declared workspace.
-All signed 16-bit integers are exactly representable. Its scratch area is
-non-reentrant. Routines that call one another must avoid keeping live state in
-that workspace or use stack frames; CPU6 RT is the JSR link register.
+Values travel in A:B; the second operand sits in memory at fp_fop. Routines
+clobber A, B, Y, Z and the fp_ workspace, never X (RT is the JSR link
+register; writing it destroys the return address).
+
+Add/subtract align by shifting the smaller mantissa right (truncating), or
+the larger one left when its mantissa has a spare digit; this matches the
+test model exactly, including last-digit differences from exact arithmetic
+after catastrophic cancellation. Print rounds to 6 significant digits
+(half-up on the 7th), fixed notation for -3 <= exp10 <= 6 with trailing
+zeros trimmed, Nova-style scientific 0.ddddddE+XX outside that range.
+Parse accepts up to 7 significant digits, a fraction, and E notation. fp_trunc (the FITR function) drops fractional digits by dividing the mantissa by 10^(6-exp10) and renormalising; full range, toward zero.
+
+## Tests
+
+
 
 ## Remaining work
 
-1. Specify rounding, zero, underflow, overflow and division-by-zero behavior
-   against Nova, including guard digits. Add a numerical test oracle and cases
-   independently checked on SIMH, not merely self-consistent encode/decode.
-2. Implement and test unpack/normalize/pack, comparison, add/subtract,
-   multiply/divide, and float-to-integer CPU6 routines. Test normal and extreme
-   exponents, signs, cancellation, rounding boundaries and error recovery.
-3. Plan the expanded FOCAL memory map and stack before replacing the value
-   representation: expressions, variables, FOR frames, ASK and TYPE all need
-   conversion; line keys, addresses and indexes remain integers.
-4. Add decimal parsing and formatting, including exponent notation and `%w.d`;
-   then run common sessions against both Nova on SIMH and CPU6. Keep separate
-   expectations where semantics intentionally differ.
-5. Add functions and arrays only once the arithmetic and storage foundations
-   are verified. Preserve LOAD/SAVE and existing integer-compatible sessions.
-
-Use `nix develop -c python3 -m unittest discover -s scripts -p test_cpu6_float.py`
-for the current primitive tests.
+1. Stage 3a-ii: wire FP into scripts/focal.py (variables become 4 bytes,
+   SET/TYPE/ASK/IF/FOR on floats, ^ with integer-valued exponents,
+   fp_ovf/fp_divz/fp_perr mapped onto FOCAL error reports).
+2. Stage 3b: FABS FSGN FITR FSQT. Stage 3c: subscripted variables.
+   Stage 3d: LOCAL WRITE/READ.
+3. Percent formats and TYPE $ come with or after 3a-ii.

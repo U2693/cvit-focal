@@ -29,14 +29,36 @@ class FocalTests(unittest.TestCase):
 
     def test_arithmetic(self):
         out = focal("T 2+3*4,!", "T (2+3)*4,!", "T -5/2,!", "T 7-10,!", "T 100/7,\"r\",100-7*14,!")
-        for want in ("\n14\n", "\n20\n", "\n-2\n", "\n-3\n", "\n14r2\n"):
+        for want in ("\n14\n", "\n20\n", "\n-2.5\n", "\n-3\n", "\n14.2857r2\n"):
             self.assertIn(want, out)
 
-    def test_integer_powers(self):
+    def test_powers(self):
         out = focal("T 2^10,!,2^3^2,!,-2^2,!,(-2)^3,!", "T 2^-1", "T 7,!")
         for value in ("1024", "512", "-4", "-8", "7"):
             self.assertIn("\n" + value + "\n", out)
-        self.assertIn("?SYNTAX", out)
+        self.assertIn("\n0.5", out)
+
+    def test_functions(self):
+        out = focal("T FABS(-4),!,FABS(2.5),!", "T FSGN(-2),!,FSGN(0),!,FSGN(7),!",
+                    "T FITR(-3.7),!,FITR(3.9),!,FITR(123456.7),!,FITR(-0.5),!", "T FSQT(4),!,FSQT(2),!,FSQT(0),!,FSQT(152399025),!",
+                    "T FSQT(FABS(-16)),!", "T 1+FSQT(9)*2,!")
+        for want in ("\n4\n", "\n2.5\n", "\n-1\n", "\n0\n", "\n1\n", "\n-3\n", "\n3\n",
+                     "\n123456\n", "\n2\n", "\n1.41421\n", "\n12345\n", "\n7\n"):
+            self.assertIn(want, out)
+        self.assertIn("?FUN", focal("T FSQT(-1)"))
+        self.assertIn("?FUN", focal("T FZZ(3)"))
+
+    def test_subscripts(self):
+        out = focal("S X(1)=10", "S X(2)=20", "T X(1)+X(2),!", "S A=5", "T A,!,A(0),!",
+                    "S X(1+1)=99", "T X(2),!", "T Q(7),!", "S X(-2)=-8", "T X(-2),!",
+                    "S X(FITR(2.9))=1", "T X(2.9),!", "FOR X(1)=1,3;T X(1),\" \"")
+        for want in ("\n30\n", "\n5\n", "\n99\n", "\n0\n", "\n-8\n", "\n1\n"):
+            self.assertIn(want, out)
+        self.assertIn("1 2 3 ", out)
+        prog = focal("1.1 F I=1,3;S S(I)=I*I", "1.2 F I=1,3;T S(I),\" \"", "G")
+        self.assertIn("1 4 9 ", prog)
+        full = focal("1.1 F I=1,70;S V(I)=I", "G")
+        self.assertIn("?VAR", full)
 
     def test_variables_and_multiple_statements(self):
         self.assertIn("\n49\n", focal("S A=7;T A*A,!"))
