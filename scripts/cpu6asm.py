@@ -11,6 +11,7 @@ Features
   * Relative branches and ``jmp``/``jsr`` (rel8) relax automatically: a branch
     out of range becomes an inverted short branch over a ``jmp``/absolute jump.
   * Data directives: db, dw, ascii, asciz, ds, align.
+  * page_safe=True: NOP-pad instructions so none straddles a 256-byte page.
   * listing() / symbols() for debugging.
 
 Relative branches are relative to the next instruction.
@@ -38,16 +39,25 @@ class AsmError(Exception):
 
 
 class Asm:
-    def __init__(self, org):
+    def __init__(self, org, page_safe=False):
         self.org = org
         self.items = []          # ('b', bytes) ('lbl', name) ('ref', prefix, sym) ('rel', op, sym) ('align', n, fill)
         self._labels = set()
         self.syms = {}           # equ / var symbols
         self.var_ptr = None
+        # page_safe (ME-5): the microcode CPU in the Meisaka emulator
+        # mis-executes instructions that straddle a 256-byte page
+        # boundary (proven on w_write stores; see docs/bare-metal-plan.md).
+        # When enabled, _layout NOP-pads so no instruction item crosses.
+        self.page_safe = page_safe
+        self._instr = set()
+        self._pads = {}
 
     # -- low level -----------------------------------------------------
-    def raw(self, *b):
+    def raw(self, *b, data=False):
         self.items.append(("b", bytes(b)))
+        if not data:
+            self._instr.add(len(self.items) - 1)
         return self
 
     def u16(self, v):
@@ -69,11 +79,13 @@ class Asm:
         if isinstance(v, str):
             self.items.append(("ref", bytes([op]), v))
         else:
-            self.raw(op).u16(v)
+            self.items.append(("b", bytes([op, (v >> 8) & 255, v & 255])))
+        self._instr.add(len(self.items) - 1)
         return self
 
     def _rel(self, op, label):
         self.items.append(("rel", op, label))
+        self._instr.add(len(self.items) - 1)
         return self
 
     def _abs16(self, op, label):
@@ -102,11 +114,11 @@ class Asm:
     def db(self, *vals):
         for v in vals:
             if isinstance(v, (bytes, bytearray)):
-                self.raw(*v)
+                self.raw(*v, data=True)
             elif isinstance(v, str):
-                self.raw(*v.encode())
+                self.raw(*v.encode(), data=True)
             else:
-                self.raw(v & 255)
+                self.raw(v & 255, data=True)
         return self
 
     def dw(self, *vals):
@@ -115,13 +127,13 @@ class Asm:
         return self
 
     def ascii(self, text):
-        return self.raw(*(text.encode() if isinstance(text, str) else text))
+        return self.raw(*(text.encode() if isinstance(text, str) else text), data=True)
 
     def asciz(self, text):
         return self.ascii(text).raw(0)
 
     def ds(self, n, fill=0):
-        return self.raw(*([fill] * n))
+        return self.raw(*([fill] * n), data=True)
 
     def align(self, n, fill=0):
         self.items.append(("align", n, fill))
@@ -137,21 +149,33 @@ class Asm:
 
     def _layout(self):
         long = set()
-        while True:
+        pads = {}
+        for _pass in range(500):
             addrs, labels, pc = [], {}, self.org
+            pending = []
             for i, it in enumerate(self.items):
-                addrs.append(pc)
                 k = it[0]
+                if k == "lbl":
+                    pending.append(i)
+                    addrs.append(pc)
+                    continue
+                pc += pads.get(i, 0)
+                for j in pending:
+                    labels[self.items[j][1]] = pc
+                    addrs[j] = pc
+                pending = []
+                addrs.append(pc)
                 if k == "b":
                     pc += len(it[1])
-                elif k == "lbl":
-                    labels[it[1]] = pc
                 elif k == "ref":
                     pc += len(it[1]) + 2
                 elif k == "rel":
                     pc += self._rel_sizes(it[1])[i in long]
                 elif k == "align":
                     pc += -pc % it[1]
+            for j in pending:
+                labels[self.items[j][1]] = pc
+                addrs[j] = pc
             table = dict(self.syms)
             table.update(labels)
             changed = False
@@ -162,8 +186,29 @@ class Asm:
                     if not -128 <= disp <= 127:
                         long.add(i)
                         changed = True
+            if self.page_safe:
+                for i in self._instr:
+                    it = self.items[i]
+                    k = it[0]
+                    if k == "b":
+                        size = len(it[1])
+                    elif k == "ref":
+                        size = len(it[1]) + 2
+                    elif k == "rel":
+                        size = self._rel_sizes(it[1])[i in long]
+                    else:
+                        continue
+                    if size < 2:
+                        continue
+                    base = addrs[i] - pads.get(i, 0)
+                    need = -base % 256 if (base % 256) + size > 256 else 0
+                    if pads.get(i, 0) != need:
+                        pads[i] = need
+                        changed = True
             if not changed:
+                self._pads = pads
                 return addrs, table, long
+        raise AsmError("layout did not converge")
 
     @staticmethod
     def _resolve(table, sym):
@@ -185,6 +230,8 @@ class Asm:
         out = bytearray()
         for i, it in enumerate(self.items):
             k = it[0]
+            if k != "lbl":
+                out += bytes([1]) * self._pads.get(i, 0)
             if k == "b":
                 out += it[1]
             elif k == "ref":
@@ -276,8 +323,12 @@ class Asm:
         """DIV src,dst: dst / src -> remainder in dst, quotient in next pair (dst even) or in dst (dst odd)."""
         return self.raw(0x78, (pair(src) << 5) | (pair(dst) << 1))
     def _md(self, op, e, word):
-        self.raw(op, e)
-        return self.u16(word)
+        if isinstance(word, str):
+            self.items.append(("ref", bytes([op, e]), word))
+        else:
+            self.items.append(("b", bytes([op, e, (word >> 8) & 255, word & 255])))
+        self._instr.add(len(self.items) - 1)
+        return self
     def mul_imm(self, imm, src, dst=None):
         """MUL= imm,src[,dst]: imm * src."""
         return self._md(0x77, ((pair(src) << 1 | 1) << 4) | (pair(dst if dst is not None else src) << 1), imm)

@@ -43,6 +43,7 @@ public static class BiscvitProgram
                 else if (a == "--trace") cpu.Trace = true;
                 else if (a == "--floppy-trace") cpu.FloppyTrace = true;
                 else if (a == "--ffc-linear-experimental") cpu.FfcLinear = true;
+                else if (a == "--bare-metal") cpu.BareMetal = true;
                 else if (a == "--floppy" && i + 1 < args.Length) cpu.MountFloppy(args[++i]);
                 else if (a == "--hawk" && i + 1 < args.Length) cpu.MountHawk(args[++i]);
                 else if (a == "--hawk0" && i + 1 < args.Length) cpu.MountHawk(0, args[++i]);
@@ -75,7 +76,7 @@ public static class BiscvitProgram
 
     static void Usage()
     {
-        Console.WriteLine("usage: biscvit [--oracle-server] [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--watch lo hi] [--ram-kb n] [--dump addr len] [--max n]");
+        Console.WriteLine("usage: biscvit [--oracle-server] [--load file addr] [--pc addr] [--sp addr] [--boot-rom file] [--type text] [--trace] [--floppy-trace] [--ffc-linear-experimental] [--floppy image] [--hawk image|--hawk0 image] [--hawk1 image] [--boot-floppy] [--halt] [--run] [--regs] [--watch lo hi] [--ram-kb n] [--dump addr len] [--max n] [--bare-metal]");
         Console.WriteLine("       floppy geometry: --floppy-sector-size n --floppy-sectors-per-track n --floppy-heads n --floppy-tracks n");
         Console.WriteLine("       Hawk geometry: --hawk-sector-size n --hawk-sector-stride n --hawk-sectors-per-track n --hawk-heads n --hawk-image-offset n");
         Console.WriteLine("TUI keys: terminal focus is normally console; F12 toggles MUX1 focus/overlay; F1 run/pause, F2 step, F3 100 steps, F4 clear HALT, F5 reset CPU, F6 breakpoint, F10 quit");
@@ -1352,6 +1353,7 @@ public sealed class Cpu6
     public bool Trace { get; set; }
     public bool FloppyTrace { get; set; }
     public bool FfcLinear { get; set; }
+    public bool BareMetal { get; set; }
     public int Breakpoint = -1;
     public event Action<char> TerminalOutput;
     public event Action<char> Mux1Output;
@@ -1797,7 +1799,7 @@ public sealed class Cpu6
     void Svc()
     {
         byte svc = Fetch();
-        if (svc == 0x40) { CvitConsoleSvc(); return; }
+        if (svc == 0x40 && !BareMetal) { CvitConsoleSvc(); return; }
         if (svc == 0x41) { DebugRegs(); return; }
         if (svc == 0x42) { DebugDump(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x43) { DebugDisasm(ReadDebugAddress(0x0800)); return; }
@@ -1808,9 +1810,9 @@ public sealed class Cpu6
         if (svc == 0x53) { PrintCvitStatus(); return; }
         if (svc == 0x54) { StartKeyTrace(); return; }
         if (svc == 0x55) { PrefixCommand(); return; }
-        if (svc == 0x56) { RunSystemMember(); return; }
-        if (svc == 0x57) { FocalLoad(); return; }
-        if (svc == 0x58) { FocalSave(); return; }
+        if (svc == 0x56 && !BareMetal) { RunSystemMember(); return; }
+        if (svc == 0x57 && !BareMetal) { FocalLoad(); return; }
+        if (svc == 0x58 && !BareMetal) { FocalSave(); return; }
         if (svc == 0x59) { PrintCvitPanel(); return; }
         // Real SVC/JSYS (CenturionJS op_JSYS, wiki "JSYS"): push page-table map, IPL, X, then the argument; X <- PC;
         // select map 0 and enter the system call handler at 0x0100.  RSV (0x0F) undoes it.
@@ -1850,7 +1852,7 @@ public sealed class Cpu6
             while (end < line.Length && Char.IsDigit(line[end])) end++;
             if (!Int32.TryParse(line.Substring(dot + 1, end - dot - 1), out int sub)) continue;
             if (sub < 0 || sub > 99) continue;
-            int key = group * 100 + (sub == 0 ? 0 : (sub < 10 ? sub * 10 : sub));
+            int key = group * 100 + sub;
             if (key <= 0 || key >= 10000 || count >= 128) continue;
             string body = end < line.Length ? line.Substring(end).TrimStart() : "";
             if (body.Length > 61) body = body.Substring(0, 61);
