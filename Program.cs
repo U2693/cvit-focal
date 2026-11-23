@@ -801,13 +801,18 @@ public sealed class CvitFileSystem
     public bool WriteTextMember(string prefix, string name, string text, bool createIfMissing, out string error)
     {
         error = "";
+        byte[] data = Encoding.ASCII.GetBytes(text);
         if (!TryFindMember(prefix, name, out int page, out int capacity))
         {
-            if (!createIfMissing || !CreateFixedMember(prefix, name, "TXT")) { error = "?NO FILE"; return false; }
+            if (!createIfMissing) { error = "?NO FILE"; return false; }
+            if (!CreateFixedMember(prefix, name, "TXT", data.Length)) { error = data.Length > sectorSize ? "?TOO BIG" : "?NO FILE"; return false; }
             if (!TryFindMember(prefix, name, out page, out capacity)) { error = "?NO FILE"; return false; }
         }
+        else if (data.Length > capacity && !RelocateMember(prefix, name, data.Length, out page, out capacity))
+        {
+            error = "?TOO BIG"; return false;
+        }
         if (!TryLibrary(prefix, out int dataSector, out _)) { error = "?NO LIBRARY"; return false; }
-        byte[] data = Encoding.ASCII.GetBytes(text);
         if (data.Length > capacity) { error = "?TOO BIG"; return false; }
         for (int pos = 0; pos < capacity; pos += PageSize)
         {
@@ -824,7 +829,9 @@ public sealed class CvitFileSystem
 
     public bool CreateFixedMember(string name, string type = "TXT") => CreateFixedMember("/SYSTEM", name, type);
 
-    public bool CreateFixedMember(string prefix, string name, string type = "TXT")
+    public bool CreateFixedMember(string prefix, string name, string type = "TXT") => CreateFixedMember(prefix, name, type, 0);
+
+    public bool CreateFixedMember(string prefix, string name, string type, int minBytes)
     {
         if (String.IsNullOrWhiteSpace(name) || name.Length > MemberNameLength) return false;
         if (!TryLibrary(prefix, out int dataSector, out int ualSector)) return false;
@@ -840,27 +847,63 @@ public sealed class CvitFileSystem
             if (image[off] == 0x84 && image[off + 1] == 0x8D) { term = row; break; }
         }
         if (term < 0) return false;
-
-        int ual = imageOffsetForSector(ualSector);
-        if (!RangeOk(ual, sectorSize)) return false;
-        int nsec = ((image[ual] << 8) | image[ual + 1]) + 1;
-        int newSector = dataSector + nsec;
-        if (dataSector == SystemDataSector && newSector >= HelpDataSector) return false;
-        int newPage = nsec * 2;
-        int newOff = imageOffsetForSector(newSector);
-        if (!RangeOk(newOff, sectorSize)) return false;
-
+        int sectors = Math.Max(1, (Math.Max(0, minBytes) + sectorSize - 1) / sectorSize);
+        if (!AllocateExtent(dataSector, ualSector, sectors, out int newPage)) return false;
         WriteDirectoryRow(DirectoryOffset(dataSector, term), name, newPage, TypeCode(type));
         int nextRow = DirectoryOffset(dataSector, term + DirectoryRowSize);
         image[nextRow] = 0x84;
         image[nextRow + 1] = 0x8D;
-
-        Array.Fill<byte>(image, 0x20, newOff, sectorSize);
-        image[ual] = (byte)(nsec >> 8);
-        image[ual + 1] = (byte)nsec;
-        AppendUalSector(ualSector, newSector);
         save();
         return true;
+    }
+
+    // Append fresh sectors at the end of a library data area and
+    // return the page number of the first one.  Allocation is append-only:
+    // the UAL high-water mark only ever moves up.
+    bool AllocateExtent(int dataSector, int ualSector, int sectors, out int newPage)
+    {
+        newPage = 0;
+        int ual = imageOffsetForSector(ualSector);
+        if (!RangeOk(ual, sectorSize)) return false;
+        int nsec = ((image[ual] << 8) | image[ual + 1]) + 1;
+        int newSector = dataSector + nsec;
+        if (dataSector == SystemDataSector && newSector + sectors > HelpDataSector) return false;
+        for (int s = 0; s < sectors; s++)
+            if (!RangeOk(imageOffsetForSector(newSector + s), sectorSize)) return false;
+        for (int s = 0; s < sectors; s++)
+        {
+            Array.Fill<byte>(image, 0x20, imageOffsetForSector(newSector + s), sectorSize);
+            AppendUalSector(ualSector, newSector + s);
+        }
+        int last = nsec + sectors - 1;
+        image[ual] = (byte)(last >> 8);
+        image[ual + 1] = (byte)last;
+        newPage = nsec * 2;
+        return true;
+    }
+
+    // Move an existing member to a fresh extent of at least minBytes.  The
+    // old extent is orphaned (append-only allocation; a compaction pass
+    // reclaims it).  Only the page field of the directory row changes.
+    bool RelocateMember(string prefix, string name, int minBytes, out int page, out int capacity)
+    {
+        page = 0; capacity = 0;
+        if (!TryLibrary(prefix, out int dataSector, out int ualSector)) return false;
+        int dirBytes = LibraryDirectoryBytes(dataSector);
+        int rowOff = -1;
+        for (int row = DirectoryFirstRow; row + DirectoryRowSize + 1 < dirBytes; row += DirectoryRowSize)
+        {
+            int off = DirectoryOffset(dataSector, row);
+            if (!RangeOk(off, DirectoryRowSize)) return false;
+            if (image[off] == 0x84 && image[off + 1] == 0x8D) break;
+            if (String.Equals(DecodeMemberName(off), name, StringComparison.OrdinalIgnoreCase)) { rowOff = off; break; }
+        }
+        if (rowOff < 0) return false;
+        int sectors = Math.Max(1, (Math.Max(0, minBytes) + sectorSize - 1) / sectorSize);
+        if (!AllocateExtent(dataSector, ualSector, sectors, out int newPage)) return false;
+        image[rowOff + 10] = (byte)(newPage % 128);
+        image[rowOff + 12] = (byte)(0x08 + newPage / 128);
+        return TryFindMember(prefix, name, out page, out capacity);
     }
 
     public IReadOnlyList<(string Name, string Type)> ListMembers() => ListMembers("/SYSTEM");
