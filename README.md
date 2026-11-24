@@ -1,40 +1,92 @@
-# biscvit
+# CVIT FOCAL
 
-A small C# terminal UI emulator/monitor for the Centurion CPU6, based on the public experimental CPU6 monitor in `../CenturionComputer/boots/cpu6.cs` and related references.
+A stand-alone FOCAL interpreter for the Centurion CPU6, distributed as a bootable Hawk disk image: `cvit-focal.img`.
 
-## Run
+Boot chain: Hawk IPL, then a small bare-metal kernel, then FOCAL. No Centurion OS is required. The kernel serves the console and the CVIT filesystem directly (catalog, load, save, run), so a FOCAL program can be saved to the disk image and loaded back in a later session.
 
-```sh
-dotnet run -- --load program.bin 0100 --pc 0100
+## Try it in a browser (no install)
+
+1. Download `cvit-focal.img` from the releases page.
+2. Open the Meisaka Centurion emulator: https://eciv.net/meisaka/cen/cen.html
+3. Attach the image to the Fixed drive. Leave the Diag Select switches at zero and the Diag ROMs option unchecked.
+4. Run, click CRT0, and at the `D=` prompt type `H1` and press Enter.
+
+The kernel banner appears, then the FOCAL banner and the `*` prompt. Ask for the catalog of saved files:
+
+```
+*.cat
+
+NAME TYPE
+KERNEL SYS
+CATALOG SYS
+EGG SYS
+FOCAL SYS
 ```
 
-Common boot scripts:
+## Run it locally with biscvit
+
+This repo also contains biscvit, the CPU6 emulator that CVIT FOCAL was developed on. With nix, `nix develop` provides the dotnet SDK.
+
+Build the disk image:
 
 ```sh
-./scripts/boot.sh       # bundled bootstrap + floppy image; sends F0\r
-./scripts/boot_hawk.sh  # bundled bootstrap + Hawk image; sends H0\r
+python3 scripts/build_stage2.py        # writes out/stage2.img
 ```
 
-## cvit OS
-
-biscvit ships with **cvit**, a small ProDOS-inspired OS for the Hawk disk:
+Boot it. Bare-metal mode lets the kernel serve everything itself:
 
 ```sh
-python3 scripts/mk_test_os.py       # builds out/os.img
-python3 scripts/mk_data_img.py      # builds formatted scratch/work platter out/data.img
-scripts/bis --hawk out/os.img       # boots to the ] prompt; try CAT, TYPE WELCOME, HELP
-scripts/bis --hawk out/os.img --hawk1 out/data.img  # H1: scratch/self-hosting platter
-scripts/hawk_export_tmp.py out/data.img              # export to a Windows-friendly temp dir
-scripts/hawk_to_iso.sh out/data.img out/data.iso      # build a Windows-mountable ISO using nix/xorriso
+dotnet run -- --bare-metal --boot-rom roms/bootstrap_unscrambled.bin --hawk out/stage2.img --run
 ```
 
-See `docs/cvit.md` for the cvit spec. Other notes: `docs/assembler.md`, `docs/focal.md`,
-`docs/centos-notes.md` (booting the real OS image, opcode findings) and `docs/bignum-notes.md` (the `0x46` bignum instructions).
+At the `D=` prompt type `H0` and press Enter.
 
-Options: `--load file addr`, `--pc addr`, `--sp addr`, `--boot-rom file`, `--type text`, `--trace`, `--floppy-trace`, `--floppy image`, `--hawk image`/`--hawk0 image`, `--hawk1 image`, `--floppy-sector-size n`, `--floppy-sectors-per-track n`, `--floppy-heads n`, `--floppy-tracks n`, `--hawk-sector-size n`, `--hawk-sector-stride n`, `--hawk-sectors-per-track n`, `--hawk-heads n`, `--hawk-image-offset n`, `--boot-floppy`, `--halt`, `--run`, `--max n`. The TUI starts running by default; use `--halt` to start paused.
+The bootstrap ROM is Centurion firmware and is not included in this repo; place the unscrambled bootstrap at `roms/bootstrap_unscrambled.bin`. The browser route above needs no ROM file.
 
-Experimental: `--ffc-linear-experimental` makes the FFC shim treat track/sector command bytes as one 16-bit linear block address. Do not use it for normal floppy booting; FDIPL uses floppy CHS addressing.
+## FOCAL on the CPU6
 
-Devices: console MUX status/data at `F200/F201`, MUX1 status/data at `F208/F209`, simple floppy registers at `F140-F145`, Hawk drive registers at `F140-F148` when `--hawk` is mounted, and a bootstrap-compatible FFC shim at `F800/F801` supporting command DMA (`43`) and execute (`45`).
+- Decimal floating point (7-digit mantissa), plus FABS, FSGN, FITR, FSQT
+- Subscripted variables; X and X(0) are the same variable
+- Dot commands at the `*` prompt:
 
-TUI: the view is a console screen with a function-key button row. Console focus is active by default; typed printable keys feed reads from `F201`. `F12` toggles a MUX1 overlay/focus using `F208/F209`. Buttons: `F1` run/pause, `F2` step, `F3` step 100, `F4` clear HALT, `F5` reset CPU, `F6` breakpoint, `F10` quit. Writes to MMIO `F201` appear in the console; writes to `F209` appear in MUX1.
+| command | effect |
+| --- | --- |
+| `.cat [library]` | list saved files (default library /SYSTEM) |
+| `.save NAME` | save the current program |
+| `.load NAME` | load a saved program |
+| `.run NAME` | load a program and start it |
+| `.help` | the built-in command summary |
+
+Binary members run with `!NAME`. Try `!EGG`, or `!CATALOG`, a small client of the kernel catalog service.
+
+## For user programs: the kernel API
+
+The kernel exposes a jump table at 0x0800 and a set of supervisor calls, so machine-language programs can use kernel services instead of driving the hardware directly:
+
+- SVC 0x40: console character I/O (BL = function, AL = character)
+- SVC 0x52: catalog (command string at 0x2F00)
+- SVC 0x56: run a member
+- SVC 0x57: load a member
+- SVC 0x58: save a member
+
+The CATALOG member in the image is the worked example: a user program whose only job is to call SVC 0x52. See docs/bare-metal-plan.md section 7 for the design notes.
+
+## Also in this repo
+
+- **biscvit**, the emulator: a C# terminal UI emulator and monitor for the CPU6. Options include --load, --pc, --sp, --boot-rom, --type, --trace, --hawk / --hawk0 / --hawk1, --floppy, --bare-metal, --run, --max. Devices: MUX console at F200/F201, MUX1 at F208/F209, Hawk registers at F140-F148.
+- **cvit OS**, the earlier COMMAND-style system for the Hawk disk (the `]` prompt). See docs/cvit.md.
+
+## Docs
+
+- docs/focal.md: the FOCAL dialect and the dot commands
+- docs/bare-metal-plan.md: kernel design, the bare-metal stages, and the API direction
+- docs/assembler.md: the CPU6 assembler used by the build scripts
+- docs/bignum-notes.md and docs/centos-notes.md: hardware and OS research notes
+
+## Known issue
+
+Saving from FOCAL works in biscvit in both hosted and bare-metal modes, verified byte-identical disk images. On the Meisaka microcode core, kernel SAVE currently shows a layout-dependent fault that is under investigation; loading and running work there. biscvit is the reference platform.
+
+## License
+
+MIT. See LICENSE.

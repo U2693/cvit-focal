@@ -3,11 +3,10 @@ obj/
 disks/
 roms/
 *.log
-!devlog/
-!devlog/**
 xxx
 out/
 os/
 disk/
 __pycache__/
 **/__pycache__/
+devlog/
