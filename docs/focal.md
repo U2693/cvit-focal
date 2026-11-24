@@ -49,11 +49,14 @@ System escapes at the `*` prompt, in the cvit house style of COMMAND `.STA`/`.CE
 | Command | Meaning |
 | --- | --- |
 | `.HELP` | List the dot commands and the FOCAL command words |
+| `.CAT [library]` | List the members of a library with their types (default /SYSTEM; `.CAT /HELP`; `.CAT /` lists the volume root) |
 | `.SAVE name` | Save the current program to a cvit text member (same service as `SAVE`) |
 | `.LOAD name` | Load a program member, replacing the current program (same service as `LOAD`) |
 | `.RUN name` | Load a program member and run it (load and go); the current program is erased first |
 
 Easter egg: `!name` at the prompt runs a binary cvit member (SVC $56), returning to `*` when it returns. Not listed in `.HELP`.
+
+`.CAT` is SVC 0x52 with its command string at 0x2F00 (the RUN-style contract): the bare-metal kernel answers it itself; in hosted mode the emulator answers it instead. The CATALOG member shipped in the image is a small client of the same service -- it seeds 0x2F00 with H0:/SYSTEM and SVCs 0x52.
 
 ## Expressions
 + - * / with the usual precedence, right-associative ^, unary -, parentheses, numbers and variables.

@@ -44,7 +44,7 @@ def build_focal():
     S("s_ovf", "\r\n?OVF\r\n")
     S("s_fun", "\r\n?FUN\r\n")
     S("s_var", "\r\n?VAR\r\n")
-    S("s_help", "\r\n.HELP .SAVE F .LOAD F .RUN F\r\nASK COMMENT DO ERASE FOR GO IF LOAD QUIT RETURN SAVE SET TYPE WRITE\r\n")
+    S("s_help", "\r\n.HELP .CAT .SAVE F .LOAD F .RUN F\r\nASK COMMENT DO ERASE FOR GO IF LOAD QUIT RETURN SAVE SET TYPE WRITE\r\n")
 
     push_a = lambda: a.sta_x("S", "-")
     pop_a = lambda: a.lda_x("S", "+")
@@ -114,7 +114,7 @@ def build_focal():
     incz()
     nextch(); a.jsr_abs("upcase").stab_d("V_CMD")
     a.jsr_abs("skip_word_tail").jsr_abs("skipsp")
-    for ch, lab in (("H", "dot_help"), ("S", "dot_save"), ("L", "dot_load"), ("R", "dot_run")):
+    for ch, lab in (("C", "dot_cat"), ("H", "dot_help"), ("S", "dot_save"), ("L", "dot_load"), ("R", "dot_run")):
         nxt = f"dot_n_{ch}"
         a.ldab_d("V_CMD").cmp_al(ord(ch)).bne(nxt)
         a.jmp_abs(lab)
@@ -139,6 +139,14 @@ def build_focal():
         a.ldab_i(ord(c)).stab_x("Y", "+")
     a.jsr_abs("copy_token")
     a.lda_i("INBUF").xfr("A", "B").svc(0x57)
+    a.jmp_abs("main_loop")
+
+    a.label("dot_cat")
+    a.lda_i(0x2F00).xfr("A", "Y")
+    for c in "CATALOG ":
+        a.ldab_i(ord(c)).stab_x("Y", "+")
+    a.jsr_abs("copy_token")
+    a.svc(0x52)
     a.jmp_abs("main_loop")
 
     a.label("dot_run")

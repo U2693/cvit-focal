@@ -211,3 +211,40 @@ and the other way round.
   sprawl.
 - ABI drift. Two console ABIs already exist. ME-1 must land exactly one
   for the FOCAL world, or every later stage inherits the confusion.
+
+## 7. After ME-5: the catalog, and toward a user-program API
+
+Direction set by Randall, 2026-11-23 (evening): the system needs a way
+to show saved files, and longer term a way for a user program to call
+the kernel is desirable.
+
+First step, DONE the same evening: the kernel answers SVC 0x52
+(catalog) itself. The contract mirrors RUN: the command string sits
+at 0x2F00. The shared parser gained a CATALOG/ATALOG strip; fs_cat
+walks the directory rows (the fs_scan machinery) and prints name and
+type for the chosen library -- /SYSTEM by default, /HELP, the volume
+root for a bare slash, ?NO LIBRARY for an unknown prefix, ?NO HAWK
+for H1:. FOCAL gained a .cat dot command, and --bare-metal now
+surrenders 0x52 to the kernel along with 0x40/0x56/0x57/0x58. The
+CATALOG member in the image thereby becomes a genuine client of a
+kernel service: it seeds 0x2F00 and SVCs, and the kernel answers.
+Verified bare-metal (listings for /SYSTEM, /HELP, root, and the
+error case), test_focal 15/15, SAVE byte-parity, ME-2 probe.
+
+Room for fs_cat came from a general cleanup: every inline a.print in
+the kernel now goes through one shared routine, k_printz (the door
+print loop, made a subroutine; it polls TX-ready, which a.print never
+did), and the string constants live in the safe part of the
+ROM-shadow pad (below 0x0FE0), out of the tail data block. The first
+build put the data block on top of the FOCAL/boot stack (top 0x2E00)
+and load_focal read garbage sectors; a build assert now pins the
+kernel end at or below 0x2CF8, the 264-byte clearance the stack has
+always had.
+
+Hosted-mode note: with the emulator serving 0x52, a bare .cat takes
+the host Disk6 path and shows a root-style listing instead of the
+/SYSTEM members; the kernel listing is the reference behavior.
+
+The API direction, when it is taken up: document the 0x0800 jump
+table and the SVC set as the user-program interface, with the catalog
+as the worked example of a member calling a kernel service.

@@ -1806,7 +1806,7 @@ public sealed class Cpu6
         if (svc == 0x44) { StartDebugDeposit(ReadDebugAddress(0x0800)); return; }
         if (svc == 0x50) { StartCed(); return; }
         if (svc == 0x51) { TypeSystemMember(); return; }
-        if (svc == 0x52) { CatalogSystem(); return; }
+        if (svc == 0x52 && !BareMetal) { CatalogSystem(); return; }
         if (svc == 0x53) { PrintCvitStatus(); return; }
         if (svc == 0x54) { StartKeyTrace(); return; }
         if (svc == 0x55) { PrefixCommand(); return; }
@@ -2122,6 +2122,15 @@ public sealed class Cpu6
         if (!fs.LooksLikeSystemVolume())
         {
             if (TryCatalogDisk6(parsed.Device, rootCatalog ? "" : parsed.Member)) return;
+            // Stage-2 images contain a valid /SYSTEM library and KERNEL but
+            // intentionally omit COMMAND, so they are not full cvit volumes.
+            if (fs.TryFindMember("/SYSTEM", "KERNEL", out _, out _))
+            {
+                DebugOut("\r\nNAME       TYPE\r\n");
+                foreach (var entry in fs.ListMembers("/SYSTEM"))
+                    DebugOut($"{entry.Name.PadRight(10)} {entry.Type}\r\n");
+                return;
+            }
             DebugOut("\r\n?NOT CVIT VOLUME\r\n");
             return;
         }
