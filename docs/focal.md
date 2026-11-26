@@ -70,7 +70,10 @@ aborts the current run and returns to the * prompt.  The format and semantics ar
 docs/focal-float-design.md; the library is differentially tested by scripts/test_fp_stage3.py.
 
 ## Variables
-A variable is a single letter (not F) with an optional subscript: X, X(3), X(I+1).  The
+A variable is a single letter with an optional subscript: X, X(3), X(I+1).  F is an
+ordinary variable.  An F followed by two or more letters and ( is a function call
+-- the four functions below, or ?FUN for an unknown name -- while F(2) is the
+variable F subscripted and a bare F is just the variable.  The
 subscript is any expression, truncated toward zero to an integer, and may be negative.  The
 default subscript is 0, so X and X(0) are the same variable.  Variables are created as 0 on
 first reference and live in a pool holding 60 distinct (letter, subscript) pairs; creating

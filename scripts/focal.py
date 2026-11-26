@@ -17,7 +17,7 @@ SCALARS = ["V_MAINSP", "V_RETADDR", "V_SAVEDSP", "V_KEY", "V_LINEKEY", "V_HI", "
            "V_PTR", "V_JUMP", "V_RET", "V_QUIT", "V_STOP", "V_T", "V_ACC", "V_BEST", "V_BESTP",
            "V_MK", "V_NEWKEY", "V_CMD", "V_SUB", "V_LEN", "V_HASDOT", "V_L1", "V_L2", "V_L3", "V_SIGN",
            "V_CNT", "V_STR", "V_KEYT", "V_CH", "V_Q", "V_PBASE", "V_PEXP", "V_SVZ",
-           "V_FK1", "V_FK2", "V_FK12", "V_FT1", "V_FT2", "V_FX", "V_FXP", "V_FY", "V_FYP", "V_FCNT",
+           "V_FK1", "V_FK2", "V_FK12", "V_FT1", "V_FT2", "V_FX", "V_FXP", "V_FY", "V_FYP", "V_FCNT", "V_EFZ",
            "V_PCNT", "V_VK", "V_VS", "V_VC"]
 COMMANDS = "TSAIGDFRQCWEL"
 
@@ -310,7 +310,6 @@ def build_focal():
     a.label("var_ref")
     a.cmp_al(0x41).blo("err_syntax")
     a.cmp_al(0x5B).bhs("err_syntax")
-    a.cmp_al(ord("F")).beq("err_syntax")
     a.stab_d("V_VK+1")
     a.ldab_i(0).stab_d("V_VK")
     a.lda_d("V_VK")
@@ -400,8 +399,8 @@ def build_focal():
     a.cmp_al(ord(")")).bne("err_syntax")
     pop_ab(); a.rsr()
     a.label("ef_25")
-    a.cmp_al(ord("F")).beq("ef_fun")
-    a.cmp_al(ord("f")).beq("ef_fun")
+    a.cmp_al(ord("F")).beq("ef_peek")
+    a.cmp_al(ord("f")).beq("ef_peek")
     a.label("ef_3")
     a.cmp_al(ord(".")).beq("ef_num")
     not_digit("ef_var")
@@ -413,6 +412,37 @@ def build_focal():
     a.rsr()
     a.label("ef_var")
     nextch(); a.jsr_abs("upcase").jsr_abs("var_ref").lda_x("Y").ldb_x("Y", disp=2).rsr()
+
+    # F starts a function when it is followed by at least two letters
+    # and then '(' -- FABS(2), FSQT(16), and FZZ(3) alike, the last to
+    # be rejected by ef_fun itself with ?FUN.  Anything else -- bare F,
+    # F(2), F followed by an operator -- is the variable F.  The scan is
+    # pure lookahead (Z saved in V_EFZ, restored on both exits), so
+    # nested factor evaluation cannot disturb it.
+    a.label("ef_peek")
+    a.xfr("Z", "A").sta_d("V_EFZ")
+    incz()
+    peek(); a.jsr_abs("upcase")
+    a.cmp_al(0x41).blo("ef_pk_no")
+    a.cmp_al(0x5B).bhs("ef_pk_no")
+    incz()
+    peek(); a.jsr_abs("upcase")
+    a.cmp_al(0x41).blo("ef_pk_no")
+    a.cmp_al(0x5B).bhs("ef_pk_no")
+    incz()
+    a.label("ef_pk_sk")
+    peek(); a.jsr_abs("upcase")
+    a.cmp_al(ord("(")).beq("ef_pk_yes")
+    a.cmp_al(0x41).blo("ef_pk_no")
+    a.cmp_al(0x5B).bhs("ef_pk_no")
+    incz(); a.jmp("ef_pk_sk")
+    a.label("ef_pk_yes")
+    a.lda_d("V_EFZ").xfr("A", "Z")
+    a.jmp_abs("ef_fun")
+    a.label("ef_pk_no")
+    a.lda_d("V_EFZ").xfr("A", "Z")
+    peek()
+    a.jmp_abs("ef_3")
 
     # Functions: F plus a two-letter key (AB/SG/IT/SQ); extra letters are
     # skipped, then ( expr ).  The packed key rides the stack across the

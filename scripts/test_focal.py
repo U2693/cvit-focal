@@ -92,6 +92,25 @@ class FocalTests(unittest.TestCase):
         self.assertEqual(ran.count("SUB"), 2)
         self.assertNotIn("NOT REACHED", ran)
 
+    def test_f_is_a_variable(self):
+        # Regression: var_ref once banned the letter F outright (a stage-2
+        # guard for the F-functions), which killed any program using F as
+        # a variable -- e.g. the calendar's mode flag.  F must behave like
+        # any other letter, as value, flag and subscripted variable.
+        self.assertIn("\n3\n", focal("S F=3;T F,!"))
+        self.assertIn("\n9\n", focal("S F(2)=9;T F(2),!"))
+        out = focal('1.10 S F=1;D 9', '9.10 I (F) 9.9,9.9;T "NO",!', '9.90 T "YES",!', 'G')
+        self.assertIn("YES", out)
+
+    def test_functions_still_work_with_f_variable(self):
+        # The disambiguation is by full name plus '(': the four functions
+        # keep working, including nested, alongside the variable F.
+        self.assertIn("\n3\n", focal("T FABS(-3),!"))
+        self.assertIn("\n-1\n", focal("T FSGN(-3),!"))
+        self.assertIn("\n3\n", focal("T FITR(3.7),!"))
+        self.assertIn("\n4\n", focal("T FSQT(16),!"))
+        self.assertIn("\n1\n", focal("T FABS(FSGN(-2)),!"))
+
     def test_ask(self):
         out = focal("1.1 A \"N? \",N", "1.2 F I=1,N;T I*I,!", "G", "3")
         self.assertIn("N? 3\n1\n4\n9\n", out)

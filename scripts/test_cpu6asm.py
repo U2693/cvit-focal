@@ -89,6 +89,37 @@ class AsmTests(unittest.TestCase):
         self.assertIn("start:", a.listing())
         self.assertEqual(a.symbols(), [(0x100, "start")])
 
+    def test_asm_export_basic(self):
+        a = Asm(0x5000).vars_at(0x2400)
+        a.var("COUNT")
+        a.lda_label("msg").xaz().ldbb_i(2).svc(0x40)
+        a.label("done").rsr()
+        a.label("msg").asciz("HELLO" + chr(13) + chr(10))
+        text = a.asm("demo")
+        self.assertIn("COUNT     EQU", text)
+        self.assertIn("LDA= msg", text)
+        self.assertIn("SVC X'40'", text)
+        self.assertIn("done      RSR", text)
+        self.assertIn("DB 'HELLO',X'0D',X'0A',0", text)
+
+    def test_asm_export_long_branch_and_ds(self):
+        a = Asm(0x1000)
+        a.bz("far").ds(200, 0)
+        a.label("far").hlt()
+        text = a.asm()
+        self.assertIn("BZ far  ; long form", text)
+        self.assertIn("DS 200", text)
+        self.assertIn("far       HLT", text)
+
+    def test_asm_export_mul_div_forms(self):
+        a = Asm(0x100)
+        a.mulu("B", "A").div_imm(6, "A").mul_mem("COUNT", "A")
+        a.equ("COUNT", 0x2400)
+        text = a.asm()
+        self.assertIn("MUL B,A", text)
+        self.assertIn("DIV= 6,A", text)
+        self.assertIn("MUL/ COUNT,A", text)
+
 
 @unittest.skipUnless(shutil.which("dotnet"), "dotnet not available")
 class EmuTests(unittest.TestCase):

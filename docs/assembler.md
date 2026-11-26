@@ -53,6 +53,14 @@ quotient in the next pair (even `d`), or quotient only in `d` (odd `d`).  The di
 when the remainder is zero (from the older wiki page).  Divide by zero leaves the registers alone
 (unverified).  Example: `lda_i(13).ldb_i(6).divu("B","A")` gives A=1, B=2.
 
+## Text export
+
+`a.asm(title=None)` renders the program back as native-style text assembly:
+labels and `EQU` symbols kept, data as `DB`/`DW`/`DS`, relaxed branches and
+page-safe pads annotated in comments.  It walks the item stream and decodes
+each instruction item, so what you read is what `bytes()` emits.  Export only
+-- cpu6asm does not (yet) assemble text input.
+
 ## Not done yet
 A text-source assembler using the native syntax (`LDAB/`, `LDA=`, `STA+`...), macros for
 `if/else/loop`, jump-table helpers, and the odd-nibble memory forms of `5x`/`7x` ops.

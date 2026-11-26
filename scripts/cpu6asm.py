@@ -280,6 +280,182 @@ class Asm:
                 lines.append(f"{addrs[i] + j:04X}  {part.hex(' ').upper():<18}{note}")
         return "\n".join(lines)
 
+    # -- text asm export --------------------------------------------------
+    # Native-style text for reading and sharing (a little literate: labels,
+    # symbols and the few things the binary cannot say for itself are kept).
+    # This is an export only -- cpu6asm does not assemble text input (yet).
+    _PAIR_NAMES = "ABXYZSCP"
+    _SINGLE_OPS = {0x00: "HLT", 0x01: "NOP", 0x09: "RSR", 0x38: "INA",
+                   0x58: "AAB", 0x59: "SAB", 0x5A: "NAB", 0x5E: "XAZ",
+                   0x5C: "XAY", 0x49: "SABB", 0x2C: "SRAB"}
+    _OP16_TEXT = {0x90: "LDA=", 0xD0: "LDB=", 0x91: "LDA/", 0x81: "LDAB/",
+                  0xD1: "LDB/", 0xC1: "LDBB/", 0xB1: "STA/", 0xA1: "STAB/",
+                  0xF1: "STB/", 0xE1: "STBB/", 0x71: "JMP/", 0x79: "JSR/"}
+    _IX_TEXT = {0x85: "LDAB", 0x95: "LDA", 0xA5: "STAB", 0xB5: "STA",
+                0xC5: "LDBB", 0xD5: "LDB", 0xE5: "STBB", 0xF5: "STB",
+                0x75: "JMP", 0x7D: "JSR"}
+    _REL_TEXT = {0x10: "BL", 0x11: "BNC", 0x16: "BM", 0x17: "BP",
+                 0x14: "BZ", 0x15: "BNZ", 0x18: "BGZ", 0x19: "BLE",
+                 JMP_REL: "JMP", JSR_REL: "JSR"}
+
+    @classmethod
+    def _breg_name(cls, i):
+        return cls._PAIR_NAMES[i >> 1] + ("H" if i % 2 == 0 else "L")
+
+    def _decode_ix(self, op, chunk):
+        b = chunk[1]
+        reg = self._PAIR_NAMES[b >> 5]
+        mode = {0: "", 1: "+", 2: "-"}[b & 3]
+        operand = ("*" if b & 4 else "") + reg + mode
+        if b & 8:
+            operand += f"+{chunk[2]}"
+        return f"{self._IX_TEXT[op]} {operand}"
+
+    def _decode_md(self, op, e, word):
+        name = "MUL" if op == 0x77 else "DIV"
+        hi, lo = e >> 4, e & 15
+        src = self._PAIR_NAMES[hi >> 1]
+        dst = self._PAIR_NAMES[lo >> 1]
+        tail = f",{dst}" if dst != src else ""
+        if hi % 2 == 1 and lo % 2 == 0:
+            return f"{name}= {word},{src}{tail}"     # immediate word
+        if hi % 2 == 0 and lo % 2 == 1:
+            return f"{name}/ {word},{src}{tail}"     # word at address
+        return f"{name}- {src},{word},{dst}"         # word at idx+disp
+
+    def _decode_instr(self, chunk):
+        op = chunk[0]
+        if len(chunk) == 1 and op in self._SINGLE_OPS:
+            return self._SINGLE_OPS[op]
+        if op in self._IX_TEXT and len(chunk) in (2, 3):
+            return self._decode_ix(op, chunk)
+        if op in (0x77, 0x78) and len(chunk) == 2:
+            b = chunk[1]
+            name = "MUL" if op == 0x77 else "DIV"
+            return f"{name} {self._PAIR_NAMES[b >> 5]},{self._PAIR_NAMES[(b >> 1) & 7]}"
+        if op in (0x77, 0x78) and len(chunk) == 4:
+            return self._decode_md(op, chunk[1], (chunk[2] << 8) | chunk[3])
+        if op in self._OP16_TEXT and len(chunk) == 3:
+            return f"{self._OP16_TEXT[op]} X'{(chunk[1] << 8) | chunk[2]:04X}'"
+        if len(chunk) == 2:
+            b = chunk[1]
+            if op == 0x45:
+                return f"XFRB {self._breg_name(b >> 4)},{self._breg_name(b & 15)}"
+            if op == 0x42:
+                return f"ANDB {self._breg_name(b >> 4)},{self._breg_name(b & 15)}"
+            if op == 0x43:
+                return f"ORB {self._breg_name(b >> 4)},{self._breg_name(b & 15)}"
+            if op == 0x55:
+                return f"XFR {self._PAIR_NAMES[b >> 5]},{self._PAIR_NAMES[(b >> 1) & 7]}"
+            if op == 0x30:
+                return f"INR {self._PAIR_NAMES[b >> 5]},{(b & 31) + 1}"
+            if op == 0x31:
+                return f"DCR {self._PAIR_NAMES[b >> 5]},{(b & 31) + 1}"
+            if op == 0x20:
+                return f"INRB {self._breg_name(b >> 4)},{(b & 15) + 1}"
+            if op == 0x21:
+                return f"DCRB {self._breg_name(b >> 4)},{(b & 15) + 1}"
+            if op == 0x7E:
+                return f"PUSH {self._breg_name(b >> 4)},{(b & 15) + 1}"
+            if op == 0x7F:
+                return f"POP {self._breg_name(b >> 4)},{(b & 15) + 1}"
+            if op == 0x66:
+                return f"SVC X'{b:02X}'"
+            if op == 0x35:
+                return f"SLL A,{b + 1}"
+            if op == 0x80:
+                return f"LDAB= {b}"
+            if op == 0xC0:
+                return f"LDBB= {b}"
+            if op == 0x2F:
+                return f"DMA X'{b:02X}'"
+        return "DB " + ",".join(f"X'{b:02X}'" for b in chunk) + "  ; undecoded"
+
+    @staticmethod
+    def _decode_data(chunk):
+        if len(chunk) >= 8 and len(set(chunk)) == 1:
+            fill = f"  ; fill X'{chunk[0]:02X}'" if chunk[0] else ""
+            return f"DS {len(chunk)}{fill}" 
+        if len(chunk) == 2 and not all(32 <= b < 127 for b in chunk):
+            return f"DW X'{(chunk[0] << 8) | chunk[1]:04X}'"
+        parts, run = [], bytearray()
+        for b in chunk:
+            if 32 <= b < 127 and b != 0x27:
+                run.append(b)
+            else:
+                if run:
+                    parts.append(f"'{run.decode()}'")
+                    run = bytearray()
+                parts.append(f"X'{b:02X}'")
+        if run:
+            parts.append(f"'{run.decode()}'")
+        return "DB " + ",".join(parts)
+
+    def asm(self, title=None):
+        """Native-style text assembly of this program (export, not input)."""
+        addrs, table, long = self._layout()
+        data = self.bytes()
+        lines = [f"* {title or 'cpu6asm export'}",
+                 "* Text export from cpu6asm.py -- for reading and sharing;",
+                 "* cpu6asm does not (yet) assemble text input.",
+                 f"* Origin X'{self.org:04X}'"]
+        for name, val in sorted(self.syms.items(), key=lambda kv: kv[1]):
+            lines.append(f"{name:<10}EQU       X'{val:04X}'")
+        if self.syms:
+            lines.append("*")
+        pos, label, prev_data = 0, None, False
+        for i, it in enumerate(self.items):
+            k = it[0]
+            if k == "lbl":
+                if label is not None:
+                    lines.append(f"{label}:")
+                label = it[1]
+                continue
+            end = (addrs[i + 1] if i + 1 < len(self.items)
+                   else self.org + len(data)) - self.org
+            chunk = data[pos:end]
+            pos = end
+            if k == "b" and chunk == b"\x00" and prev_data and label is None:
+                lines[-1] += ",0"     # asciz terminator rides its string
+                continue
+            texts = []
+            npad = self._pads.get(i, 0)
+            if npad:
+                chunk = chunk[npad:]
+                texts += ["NOP  ; page-boundary pad"] * npad
+            if k == "align":
+                texts.append(f"DS {len(chunk)}  ; align {it[1]}")
+                prev_data = False
+            elif k == "rel":
+                text = f"{self._REL_TEXT[it[1]]} {it[2]}"
+                if i in long:
+                    text += "  ; long form: inverted branch over JMP/"
+                texts.append(text)
+                prev_data = False
+            elif k == "ref":
+                prefix, sym = it[1], it[2]
+                if len(prefix) == 0:
+                    texts.append(f"DW {sym}")
+                elif len(prefix) == 1:
+                    texts.append(f"{self._OP16_TEXT[prefix[0]]} {sym}")
+                else:
+                    texts.append(self._decode_md(prefix[0], prefix[1], sym))
+                prev_data = False
+            elif i in self._instr and not (chunk == b"\x00" and prev_data):
+                texts.append(self._decode_instr(chunk))
+                prev_data = False
+            else:
+                text = self._decode_data(chunk)
+                texts.append(text)
+                prev_data = chr(39) in text
+            for text in texts:
+                lines.append(f"{label:<10}{text}" if label else f"          {text}")
+                label = None
+        if label is not None:
+            lines.append(f"{label}:")
+        return "\n".join(lines)
+
+
     # -- simple ops ------------------------------------------------------
     def nop(self): return self.raw(0x01)
     def hlt(self): return self.raw(0x00)
