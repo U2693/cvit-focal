@@ -14,7 +14,7 @@ def focal(*lines):
     env = dict(os.environ, DOTNET_ROLL_FORWARD="Major")
     out = subprocess.run([str(ROOT / "scripts/bis"), "--hawk", str(ROOT / "out/os.img"), "--run",
                           "--max", "40000000", "--type", keys], capture_output=True, text=True, env=env).stdout
-    return out.split("CVIT FOCAL V0.1", 1)[1].replace("\r", "")
+    return out.split("CVIT FOCAL V0.7.1", 1)[1].replace("\r", "")
 
 
 @unittest.skipUnless(shutil.which("dotnet") and (ROOT / "out/os.img").exists(), "needs dotnet and out/os.img")

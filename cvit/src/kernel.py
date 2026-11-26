@@ -15,7 +15,7 @@ def build_kernel(command_sector, command_sectors=1):
         a.jmp_abs(vector)
 
     a.label("cold_start")
-    a.print("\r\ncvit V0.1\r\n")
+    a.print("\r\ncvit V0.7.1\r\n")
     a.print("COPYRIGHT (C) 2026 BISCVIT\r\n")
     a.jsr_abs("load_command")
     a.lda_i(COMMAND_LOAD).xay().jmp_y()

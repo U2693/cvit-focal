@@ -160,7 +160,7 @@ def build_kernel2(focal_sector, focal_sectors):
     # pad (below 0x0FE0): constant data, read-only at runtime, and
     # out of the tail data block so the FOCAL/boot stack (top
     # 0x2E00) keeps its full clearance above the kernel.
-    a.label("ks_banner1").raw(13, 10, 99, 118, 105, 116, 32, 86, 48, 46, 49, 13, 10, 0)
+    a.label("ks_banner1").raw(13, 10, 99, 118, 105, 116, 32, 86, 48, 46, 55, 46, 49, 13, 10, 0)
     a.label("ks_banner2").raw(67, 79, 80, 89, 82, 73, 71, 72, 84, 32, 40, 67, 41, 32, 50, 48, 50, 54, 32, 66, 73, 83, 67, 86, 73, 84, 13, 10, 0)
     a.label("ks_bye").raw(13, 10, 66, 89, 69, 13, 10, 0)
     a.label("ks_svc").raw(13, 10, 63, 83, 86, 67, 13, 10, 0)

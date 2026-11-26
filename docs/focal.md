@@ -7,7 +7,7 @@ the cvit `]` prompt.
 ```text
 ]RUN FOCAL
 
-CVIT FOCAL V0.1
+CVIT FOCAL V0.7.1
 *1.1 ASK "N? ",N
 *1.2 FOR I=1,N; TYPE I*I,!
 *1.3 TYPE "DONE",!

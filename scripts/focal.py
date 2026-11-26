@@ -36,7 +36,7 @@ def build_focal():
     def S(name, text):
         strings[name] = text
 
-    S("s_banner", "\r\nCVIT FOCAL V0.1\r\n")
+    S("s_banner", "\r\nCVIT FOCAL V0.7.1\r\n")
     S("s_prompt", "*")
     S("s_syntax", "\r\n?SYNTAX\r\n")
     S("s_div0", "\r\n?DIV0\r\n")
